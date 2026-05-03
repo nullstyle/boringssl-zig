@@ -35,3 +35,6 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include <openssl/bio.h>
+#include <openssl/aead.h>
+#include <openssl/hkdf.h>
+#include <openssl/aes.h>

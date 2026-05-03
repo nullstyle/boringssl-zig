@@ -9,6 +9,9 @@ pub const crypto = struct {
     pub const hash = @import("crypto/hash.zig");
     pub const hmac = @import("crypto/hmac.zig");
     pub const rand = @import("crypto/rand.zig");
+    pub const aead = @import("crypto/aead.zig");
+    pub const kdf = @import("crypto/kdf.zig");
+    pub const aes = @import("crypto/aes.zig");
 };
 
 pub const tls = @import("tls.zig");
@@ -21,6 +24,9 @@ test {
     _ = crypto.hash;
     _ = crypto.hmac;
     _ = crypto.rand;
+    _ = crypto.aead;
+    _ = crypto.kdf;
+    _ = crypto.aes;
     _ = tls;
     _ = errors;
 }

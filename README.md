@@ -4,7 +4,7 @@ A Zig wrapper around BoringSSL, intended for publication as a Zig package.
 Builds BoringSSL natively from `build.zig` — consumers need only Zig
 0.16.0; CMake is optional and only used as a verification path.
 
-**Status: Phase 3 complete (0.1.0).**
+**Status: 0.2.0 — adds AEAD, HKDF, and AES single-block primitives for QUIC consumers.**
 
 | Phase | What | Status |
 | --- | --- | --- |
@@ -12,6 +12,7 @@ Builds BoringSSL natively from `build.zig` — consumers need only Zig
 | 1 | Cross-compile macOS + linux-musl, TLS client wrapper | ✅ |
 | 2 | Drop CMake — native `build.zig` is the default | ✅ |
 | 3 | Consumable as `build.zig.zon` dependency, BoringSSL via `zig fetch` | ✅ |
+| 0.2 | AEAD (GCM, ChaCha20-Poly1305) + HKDF + AES-Block | ✅ |
 
 Verified targets: `aarch64-macos`, `x86_64-macos`, `aarch64-linux-musl`,
 `x86_64-linux-musl`. KAT tests run natively on macOS targets and on x86_64
@@ -79,21 +80,36 @@ const boringssl = @import("boringssl");
 
 // Hashes
 const digest = boringssl.crypto.hash.Sha256.hash("hello");
-var ctx = boringssl.crypto.hash.Sha512.init();
-ctx.update("...");
-const tag = ctx.finalDigest();
+var hash_ctx = boringssl.crypto.hash.Sha512.init();
+hash_ctx.update("...");
+const tag = hash_ctx.finalDigest();
 
 // HMAC
 const mac = boringssl.crypto.hmac.HmacSha256.auth(key, msg);
 
+// AEAD (TLS 1.3 / RFC 9001 packet protection)
+var aead = try boringssl.crypto.aead.AesGcm128.init(&aead_key);
+defer aead.deinit();
+const ct_len = try aead.seal(&ct_buf, &nonce, ad, plaintext);
+const pt_len = try aead.open(&pt_buf, &nonce, ad, ct_buf[0..ct_len]);
+
+// HKDF (RFC 5869; QUIC initial-secret derivation)
+const prk = boringssl.crypto.kdf.HkdfSha256.extract(salt, ikm);
+boringssl.crypto.kdf.HkdfSha256.expand(&prk, info, &okm);
+
+// AES single-block (header protection)
+const aes = boringssl.crypto.aes.Aes128.init(&hp_key);
+var mask: [16]u8 = undefined;
+aes.encryptBlock(&sample, &mask);
+
 // Random
-var rand: [32]u8 = undefined;
-try boringssl.crypto.rand.fillBytes(&rand);
+var rand_buf: [32]u8 = undefined;
+try boringssl.crypto.rand.fillBytes(&rand_buf);
 
 // TLS
-var ctx = try boringssl.tls.Context.initClient(.{ .verify = .system });
-defer ctx.deinit();
-var conn = try ctx.newClient(.{ .hostname = "example.com", .fd = sock });
+var tls_ctx = try boringssl.tls.Context.initClient(.{ .verify = .system });
+defer tls_ctx.deinit();
+var conn = try tls_ctx.newClient(.{ .hostname = "example.com", .fd = sock });
 defer conn.deinit();
 try conn.handshake();
 try conn.writeAll("GET / HTTP/1.1\r\n...\r\n\r\n");
@@ -142,8 +158,8 @@ them from macOS needs `qemu-aarch64` / `qemu-x86_64` (or use `-fqemu`).
 ```
 src/                    library code only (shipped to consumers)
   c_imports.h
-  root.zig              public API: crypto.{hash,hmac,rand}, tls, errors, raw
-  crypto/{hash,hmac,rand}.zig
+  root.zig              public API: crypto.{hash,hmac,rand,aead,kdf,aes}, tls, errors, raw
+  crypto/{hash,hmac,rand,aead,kdf,aes}.zig
   tls.zig               SSL_CTX + SSL wrapper, fd-based
   internal/errors.zig
 cli/                    development binaries (NOT shipped)
