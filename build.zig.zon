@@ -1,0 +1,19 @@
+.{
+    .name = .boringssl_zig,
+    .version = "0.1.0",
+    .fingerprint = 0x5f3b14003c1d21e2,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .boringssl_src = .{
+            .url = "https://boringssl.googlesource.com/boringssl/+archive/aef0e2df53d9b2357c2e7ee7e93fc869214a00b4.tar.gz",
+            .hash = "N-V-__8AAIz-yA1qPu2wxEtNpv8DTC2EpGepIdO2F1uU5M9k",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "build_boringssl.zig",
+        "src",
+        "README.md",
+    },
+}

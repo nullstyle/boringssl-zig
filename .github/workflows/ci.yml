@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  ZIG_VERSION: "0.16.0"
+
+jobs:
+  native:
+    name: native test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        run: |
+          set -eu
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64)  zig_arch=x86_64 ;;
+            aarch64) zig_arch=aarch64 ;;
+            *) echo "unsupported arch: $arch" >&2; exit 1 ;;
+          esac
+          url="https://ziglang.org/download/${ZIG_VERSION}/zig-${zig_arch}-linux-${ZIG_VERSION}.tar.xz"
+          echo "fetching $url"
+          curl -fsSL "$url" -o /tmp/zig.tar.xz
+          mkdir -p "$HOME/.zig"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/.zig" --strip-components=1
+          echo "$HOME/.zig" >> "$GITHUB_PATH"
+
+      - name: Show toolchain
+        run: zig version
+
+      - name: zig build test
+        run: zig build test --summary all
+
+      - name: zig build run-smoke
+        run: zig build run-smoke
+
+      - name: Consumer integration test
+        working-directory: examples/consumer
+        run: zig build test --summary all
+
+  cross:
+    name: cross ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-macos
+          - x86_64-macos
+          - aarch64-linux-musl
+          - x86_64-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        run: |
+          set -eu
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64)  zig_arch=x86_64 ;;
+            aarch64) zig_arch=aarch64 ;;
+            *) echo "unsupported arch: $arch" >&2; exit 1 ;;
+          esac
+          url="https://ziglang.org/download/${ZIG_VERSION}/zig-${zig_arch}-linux-${ZIG_VERSION}.tar.xz"
+          curl -fsSL "$url" -o /tmp/zig.tar.xz
+          mkdir -p "$HOME/.zig"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/.zig" --strip-components=1
+          echo "$HOME/.zig" >> "$GITHUB_PATH"
+
+      - name: Cross-link smoke executable
+        run: zig build -Dtarget=${{ matrix.target }}

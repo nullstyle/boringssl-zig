@@ -1,0 +1,9 @@
+.cache/
+.zig-cache/
+zig-cache/
+zig-out/
+zig-pkg/
+
+vendor/boringssl-prebuilt/
+
+.DS_Store
