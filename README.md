@@ -4,7 +4,7 @@ A Zig wrapper around BoringSSL, intended for publication as a Zig package.
 Builds BoringSSL natively from `build.zig` — consumers need only Zig
 0.16.0; CMake is optional and only used as a verification path.
 
-**Status: 0.2.0 — adds AEAD, HKDF, and AES single-block primitives for QUIC consumers.**
+**Status: 0.5.0 — TLS 1.3 session resumption + QUIC 0-RTT, ChaCha20 stream cipher, error-queue diagnostics, and SSLKEYLOGFILE callback.**
 
 | Phase | What | Status |
 | --- | --- | --- |
@@ -13,6 +13,9 @@ Builds BoringSSL natively from `build.zig` — consumers need only Zig
 | 2 | Drop CMake — native `build.zig` is the default | ✅ |
 | 3 | Consumable as `build.zig.zon` dependency, BoringSSL via `zig fetch` | ✅ |
 | 0.2 | AEAD (GCM, ChaCha20-Poly1305) + HKDF + AES-Block | ✅ |
+| 0.3 | TLS server + cert/key loading + ALPN + QUIC `SSL_QUIC_METHOD` bridge | ✅ |
+| 0.4 | TLS 1.3 session resumption + QUIC 0-RTT (`tls.Session`, new-session callback, early-data status) | ✅ |
+| 0.5 | ChaCha20 stream cipher, `errors.popErrorString`, `Context.setKeylogCallback` | ✅ |
 
 Verified targets: `aarch64-macos`, `x86_64-macos`, `aarch64-linux-musl`,
 `x86_64-linux-musl`. KAT tests run natively on macOS targets and on x86_64
@@ -97,22 +100,73 @@ const pt_len = try aead.open(&pt_buf, &nonce, ad, ct_buf[0..ct_len]);
 const prk = boringssl.crypto.kdf.HkdfSha256.extract(salt, ikm);
 boringssl.crypto.kdf.HkdfSha256.expand(&prk, info, &okm);
 
-// AES single-block (header protection)
+// AES single-block (header protection — AES suite)
 const aes = boringssl.crypto.aes.Aes128.init(&hp_key);
 var mask: [16]u8 = undefined;
 aes.encryptBlock(&sample, &mask);
+
+// ChaCha20 (stream cipher + QUIC HP mask for ChaCha suite)
+boringssl.crypto.chacha20.xor(&out_buf, &in_buf, &cc_key, &cc_nonce, 0);
+const cc_mask = boringssl.crypto.chacha20.quicHpMask(&cc_hp_key, &sample);
 
 // Random
 var rand_buf: [32]u8 = undefined;
 try boringssl.crypto.rand.fillBytes(&rand_buf);
 
-// TLS
+// TLS client
 var tls_ctx = try boringssl.tls.Context.initClient(.{ .verify = .system });
 defer tls_ctx.deinit();
 var conn = try tls_ctx.newClient(.{ .hostname = "example.com", .fd = sock });
 defer conn.deinit();
 try conn.handshake();
 try conn.writeAll("GET / HTTP/1.1\r\n...\r\n\r\n");
+
+// TLS server (with cert + key + ALPN)
+const protos = [_][]const u8{ "h2", "http/1.1" };
+var srv_ctx = try boringssl.tls.Context.initServer(.{
+    .verify = .none,
+    .min_version = boringssl.raw.TLS1_3_VERSION,
+    .alpn = &protos,
+});
+defer srv_ctx.deinit();
+try srv_ctx.loadCertChainAndKey(cert_pem_bytes, key_pem_bytes);
+var srv_conn = try srv_ctx.newServer(.{ .fd = accept_fd });
+defer srv_conn.deinit();
+try srv_conn.handshake();
+const negotiated = srv_conn.alpnSelected(); // ?[]const u8
+
+// QUIC TLS bridge — drive TLS 1.3 over BoringSSL's SSL_QUIC_METHOD.
+var quic_conn = try srv_ctx.newQuicServer();
+defer quic_conn.deinit();
+try quic_conn.setUserData(my_state_ptr);
+try quic_conn.setQuicMethod(&my_method); // boringssl.tls.quic.Method
+try quic_conn.setQuicTransportParams(rfc9000_section_18_bytes);
+try quic_conn.setQuicEarlyDataContext(replay_context_bytes); // server-side 0-RTT
+try quic_conn.handshake(); // returns WantRead until peer bytes arrive
+try quic_conn.provideQuicData(.initial, peer_crypto_bytes);
+
+// Session resumption + 0-RTT (client side)
+try client_ctx.setNewSessionCallback(captureSession, null);
+// ... after handshake, captured session has been serialized to bytes ...
+var session = try boringssl.tls.Session.fromBytes(client_ctx, saved_session_bytes);
+defer session.deinit();
+var resumed = try client_ctx.newQuicClient();
+defer resumed.deinit();
+try resumed.setSession(session);
+resumed.setEarlyDataEnabled(true);
+// ... drive handshake; then check ...
+const status = resumed.earlyDataStatus(); // .accepted / .rejected / .not_offered
+
+// SSLKEYLOGFILE-style debugging
+try client_ctx.setKeylogCallback(struct {
+    fn line(s: []const u8) void { std.debug.print("{s}\n", .{s}); }
+}.line);
+
+// Drain BoringSSL's per-thread error queue
+if (try boringssl.errors.popErrorString(allocator)) |msg| {
+    defer allocator.free(msg);
+    std.debug.print("bssl: {s}\n", .{msg});
+}
 
 // Raw access (unstable; symbols carry the `zbssl_` prefix):
 boringssl.raw.zbssl_SHA256_Init(&raw_ctx);
@@ -121,7 +175,7 @@ boringssl.raw.zbssl_SHA256_Init(&raw_ctx);
 ### The `raw` namespace
 
 `boringssl.raw` is the translate-c output of [`src/c_imports.h`](src/c_imports.h),
-which pulls in `<openssl/{base,crypto,err,evp,sha,hmac,rand,ssl,x509,x509v3,bio}.h>`.
+which pulls in `<openssl/{base,crypto,err,evp,sha,hmac,rand,ssl,x509,x509v3,bio,aead,hkdf,aes,chacha,pem}.h>`.
 The supported way to call BoringSSL functions is the wrapper API
 (`boringssl.crypto.*`, `boringssl.tls.*`); reach into `raw.*` only when
 you need a primitive the wrapper hasn't yet exposed.
@@ -158,14 +212,21 @@ them from macOS needs `qemu-aarch64` / `qemu-x86_64` (or use `-fqemu`).
 ```
 src/                    library code only (shipped to consumers)
   c_imports.h
-  root.zig              public API: crypto.{hash,hmac,rand,aead,kdf,aes}, tls, errors, raw
-  crypto/{hash,hmac,rand,aead,kdf,aes}.zig
-  tls.zig               SSL_CTX + SSL wrapper, fd-based
-  internal/errors.zig
+  root.zig              public API: crypto.{hash,hmac,rand,aead,kdf,aes,chacha20}, tls, errors, raw
+  crypto/{hash,hmac,rand,aead,kdf,aes,chacha20}.zig
+  tls.zig               TLS 1.3 client + server (fd-based + fd-less for QUIC), Session, callbacks
+  tls_quic.zig          QUIC-specific types (EncryptionLevel, Method)
+  internal/errors.zig   error-queue helpers (popErrorString, etc.)
 cli/                    development binaries (NOT shipped)
   smoke.zig             SHA-256 + RAND demo
   tls_smoke.zig         HTTPS round-trip
-tests/                  KATs: SHA-2, HMAC-SHA-2 (RFC 4231), RAND
+tests/                  KATs and in-process integration tests
+  data/                 self-signed P-256 test cert + key
+  kat_*.zig             SHA-2, HMAC-SHA-2 (RFC 4231), RAND
+  tls_server.zig        cert loading + socketpair handshake + ALPN
+  quic_bridge.zig       end-to-end QUIC TLS handshake via Method callbacks
+  tls_session.zig       session resumption + QUIC 0-RTT round-trip
+  tls_keylog.zig        keylog callback fires with SSLKEYLOGFILE-format lines
 examples/consumer/      standalone Zig package importing boringssl-zig
                         via build.zig.zon — `just test-consumer` exercises it
 build.zig               main build script, dispatches on -Dboringssl-source

@@ -38,3 +38,5 @@
 #include <openssl/aead.h>
 #include <openssl/hkdf.h>
 #include <openssl/aes.h>
+#include <openssl/chacha.h>
+#include <openssl/pem.h>
