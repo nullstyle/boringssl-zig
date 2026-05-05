@@ -95,6 +95,11 @@ pub fn build(b: *Build, options: Options) Result {
     });
 
     addSection(b, libssl_mod, sources, "ssl", options.src, &cxx_flags, &asm_flags);
+    libssl_mod.addCSourceFile(.{
+        .file = b.path("src/ssl_shim.cc"),
+        .flags = &cxx_flags,
+        .language = .cpp,
+    });
     libssl_mod.linkLibrary(libcrypto);
 
     return .{

@@ -89,6 +89,12 @@ pub const ContextOptions = struct {
     /// `Conn.setQuicEarlyDataContext` before the handshake — it's
     /// the QUIC-specific replay-safety binding.
     early_data_enabled: bool = false,
+
+    /// Testing-only override for whether BoringSSL behaves as if AES
+    /// hardware is available. Passing `false` makes TLS 1.3 clients prefer
+    /// ChaCha20-Poly1305 over AES-GCM, which is useful for interop suites that
+    /// need deterministic ChaCha ClientHellos on AES-capable hosts.
+    aes_hw_override_for_testing: ?bool = null,
 };
 
 pub const Context = struct {
@@ -158,8 +164,23 @@ pub const Context = struct {
         if (options.early_data_enabled) {
             c.zbssl_SSL_CTX_set_early_data_enabled(ctx, 1);
         }
+        if (options.aes_hw_override_for_testing) |has_aes_hw| {
+            c.boringssl_zig_SSL_CTX_set_aes_hw_override_for_testing(
+                ctx,
+                if (has_aes_hw) 1 else 0,
+            );
+        }
 
         return .{ .inner = ctx, .mode = mode };
+    }
+
+    /// Testing-only override for whether BoringSSL behaves as if AES hardware
+    /// is available. Use `false` to prefer ChaCha20-Poly1305 in TLS 1.3.
+    pub fn setAesHardwareOverrideForTesting(self: Context, has_aes_hw: bool) void {
+        c.boringssl_zig_SSL_CTX_set_aes_hw_override_for_testing(
+            self.inner,
+            if (has_aes_hw) 1 else 0,
+        );
     }
 
     /// Register a callback invoked when BoringSSL receives a
@@ -877,6 +898,16 @@ fn sslUserExIndex() c_int {
 test "client context still inits with default options" {
     var ctx = try Context.initClient(.{ .verify = .none });
     defer ctx.deinit();
+}
+
+test "client context accepts AES hardware override testing knob" {
+    var ctx = try Context.initClient(.{
+        .verify = .none,
+        .aes_hw_override_for_testing = false,
+    });
+    defer ctx.deinit();
+
+    ctx.setAesHardwareOverrideForTesting(false);
 }
 
 test "server context refuses loadCertChainAndKey when not server" {
