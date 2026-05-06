@@ -48,6 +48,8 @@ pub const Error = error{
     SessionParseFailed,
     SetSessionFailed,
     KeylogSetupFailed,
+    AllowEarlyDataCallbackInstallFailed,
+    EarlyDataRejected,
 };
 
 pub const Mode = enum { client, server };
@@ -207,6 +209,49 @@ pub const Context = struct {
         // For new_cb to fire, client cache mode must be enabled.
         _ = c.zbssl_SSL_CTX_set_session_cache_mode(self.inner, c.SSL_SESS_CACHE_CLIENT |
             c.SSL_SESS_CACHE_NO_INTERNAL_STORE);
+    }
+
+    /// Register a server-side hook that decides, per incoming
+    /// ClientHello, whether 0-RTT (early data) is allowed for that
+    /// specific handshake attempt. Returning `false` disables early
+    /// data for that connection without aborting the handshake —
+    /// a normal 1-RTT handshake proceeds and BoringSSL reports
+    /// `ssl_early_data_disabled` via `Conn.earlyDataReason()`.
+    ///
+    /// This is the QUIC anti-replay integration point (RFC 9001
+    /// §9.2): the embedder runs its anti-replay tracker against the
+    /// resumed session identity (see `Conn.peerSessionId`) and
+    /// returns `false` if the offer would be a replay.
+    ///
+    /// The callback fires for every ClientHello on this server
+    /// `Context`. For non-resumed handshakes the ClientHello will
+    /// not carry a pre_shared_key extension and `Conn.peerSessionId`
+    /// will return null — embedders may use that as a fast "no
+    /// replay check needed" signal. BoringSSL also rejects 0-RTT
+    /// for those handshakes regardless of the callback's return.
+    ///
+    /// Implemented on top of BoringSSL's
+    /// `SSL_CTX_set_select_certificate_cb`. That hook fires before
+    /// the resumption decision is taken, so calling
+    /// `SSL_set_early_data_enabled(ssl, 0)` on a `false` return
+    /// reliably suppresses 0-RTT acceptance. Returns
+    /// `Error.AllowEarlyDataCallbackInstallFailed` if the ex-data
+    /// slot used to stash the holder cannot be installed.
+    pub fn setAllowEarlyDataCallback(
+        self: *Context,
+        cb: AllowEarlyDataCallback,
+        user_data: ?*anyopaque,
+    ) Error!void {
+        if (self.mode != .server) return Error.NotServerContext;
+
+        const idx = allowEarlyDataExIndex();
+        const holder = c_alloc.create(AllowEarlyDataHolder) catch return Error.OutOfMemory;
+        holder.* = .{ .cb = cb, .user_data = user_data };
+        if (c.zbssl_SSL_CTX_set_ex_data(self.inner, idx, holder) != 1) {
+            c_alloc.destroy(holder);
+            return Error.AllowEarlyDataCallbackInstallFailed;
+        }
+        c.zbssl_SSL_CTX_set_select_certificate_cb(self.inner, allowEarlyDataTrampoline);
     }
 
     /// Register a TLS keylog callback (SSLKEYLOGFILE-style debug
@@ -584,6 +629,55 @@ pub const Conn = struct {
         const s = c.zbssl_SSL_early_data_reason_string(reason) orelse return "(unknown)";
         return std.mem.sliceTo(s, 0);
     }
+
+    /// Disable early data on this specific connection. Useful from
+    /// inside a callback that has decided the offer is a replay or
+    /// otherwise unsafe to honor. Equivalent to
+    /// `SSL_set_early_data_enabled(ssl, 0)` and matches the inverse
+    /// of `setEarlyDataEnabled(true)`.
+    pub fn disableEarlyData(self: *Conn) void {
+        c.zbssl_SSL_set_early_data_enabled(self.inner, 0);
+    }
+
+    /// Reset a client connection that hit
+    /// `Error.EarlyDataRejected`. After this returns the SSL is
+    /// logically a fresh connection on which `handshake()` may be
+    /// called again to complete the full 1-RTT handshake. Calling
+    /// this on a connection that did NOT hit early-data rejection
+    /// is undefined behavior in BoringSSL.
+    pub fn resetEarlyDataReject(self: *Conn) void {
+        c.zbssl_SSL_reset_early_data_reject(self.inner);
+    }
+
+    /// Returns a stable identity for the resumption attempt being
+    /// processed, or null if no session is being resumed. Used by
+    /// embedders inside an `AllowEarlyDataCallback` to feed their
+    /// 0-RTT replay tracker.
+    ///
+    /// During an `AllowEarlyDataCallback` invocation: returns the
+    /// PSK identity (TLS 1.3 session ticket bytes) from the
+    /// ClientHello's `pre_shared_key` extension. The bytes point
+    /// into the ClientHello buffer and are only valid for the
+    /// duration of the callback — copy if you need to retain them.
+    /// Returns null when the ClientHello does not offer a
+    /// pre_shared_key (a non-resumed handshake).
+    ///
+    /// Outside the callback: returns BoringSSL's
+    /// `SSL_SESSION_get_id` bytes for whatever session is currently
+    /// bound to the connection. May be null if no session is
+    /// attached yet.
+    pub fn peerSessionId(self: *Conn) ?[]const u8 {
+        if (current_client_hello) |hello| {
+            if (hello.*.ssl == self.inner) {
+                return extractPskIdentity(hello);
+            }
+        }
+        const session = c.zbssl_SSL_get_session(self.inner) orelse return null;
+        var len: c_uint = 0;
+        const ptr = c.zbssl_SSL_SESSION_get_id(session, &len);
+        if (len == 0 or ptr == null) return null;
+        return ptr[0..@intCast(len)];
+    }
 };
 
 /// Owned wrapper around BoringSSL's `SSL_SESSION`. Sessions are
@@ -648,6 +742,27 @@ pub const NewSessionCallback = *const fn (
 /// compatible file.
 pub const KeylogCallback = *const fn (line: []const u8) void;
 
+/// Server-side hook installed via `Context.setAllowEarlyDataCallback`.
+/// Invoked from the BoringSSL early callback for every ClientHello,
+/// before the resumption decision is made. Return `true` to allow
+/// 0-RTT for this connection, `false` to disable it (the handshake
+/// continues as a normal 1-RTT handshake).
+///
+/// `ssl` is a transient `*Conn` view valid only for the duration of
+/// the callback. Use `Conn.peerSessionId()` from inside the callback
+/// to obtain a stable identity for the resumption attempt; that
+/// returns null when no resumed session is attached, in which case
+/// the return value is moot — BoringSSL won't accept 0-RTT anyway.
+///
+/// The callback must be infallible from BoringSSL's perspective; if
+/// the embedder needs to abort the handshake outright on a
+/// catastrophic anti-replay error, it should set up that behavior
+/// out-of-band and return `false` here so 0-RTT is at least denied.
+pub const AllowEarlyDataCallback = *const fn (
+    user_data: ?*anyopaque,
+    ssl: *Conn,
+) bool;
+
 fn mapSslError(ssl: *c.SSL, ret: c_int, default: Error) Error {
     const err_code = c.zbssl_SSL_get_error(ssl, ret);
     return switch (err_code) {
@@ -655,6 +770,7 @@ fn mapSslError(ssl: *c.SSL, ret: c_int, default: Error) Error {
         c.SSL_ERROR_WANT_WRITE => Error.WantWrite,
         c.SSL_ERROR_ZERO_RETURN => Error.ConnectionClosed,
         c.SSL_ERROR_SYSCALL => Error.SyscallError,
+        c.SSL_ERROR_EARLY_DATA_REJECTED => Error.EarlyDataRejected,
         else => default,
     };
 }
@@ -885,6 +1001,130 @@ fn keylogTrampoline(
     const holder: *const KeylogHolder = @ptrCast(@alignCast(holder_raw));
     const line_slice = std.mem.sliceTo(line, 0);
     holder.cb(line_slice);
+}
+
+// -- allow-early-data callback ex-data -----------------------------------
+
+const AllowEarlyDataHolder = struct {
+    cb: AllowEarlyDataCallback,
+    user_data: ?*anyopaque,
+};
+
+/// Threadlocal pointer stashed by the trampoline so that
+/// `Conn.peerSessionId()` can reach the in-flight ClientHello when
+/// invoked from inside an `AllowEarlyDataCallback`. Cleared back to
+/// null on trampoline exit. The pointer is owned by BoringSSL and
+/// only valid for the duration of the callback.
+threadlocal var current_client_hello: ?*const c.SSL_CLIENT_HELLO = null;
+
+/// Extract the first `PskIdentity` (a TLS 1.3 session ticket) from
+/// the ClientHello's `pre_shared_key` extension, if present. Returns
+/// null when the extension is missing or malformed — both indicate
+/// a non-resumption handshake from the embedder's perspective.
+///
+/// Wire format (RFC 8446 §4.2.11):
+///   OfferedPsks {
+///     PskIdentity identities<7..2^16-1>;  // 2-byte length prefix, then entries
+///     PskBinderEntry binders<33..2^16-1>;
+///   }
+///   PskIdentity {
+///     opaque identity<1..2^16-1>;         // 2-byte length, then bytes
+///     uint32 obfuscated_ticket_age;
+///   }
+/// The minimum for a valid first entry is therefore 2+1+4=7 bytes
+/// inside the identities list, plus the 2-byte list-length prefix.
+fn extractPskIdentity(hello: *const c.SSL_CLIENT_HELLO) ?[]const u8 {
+    var ext_data: [*c]const u8 = null;
+    var ext_len: usize = 0;
+    if (c.zbssl_SSL_early_callback_ctx_extension_get(
+        hello,
+        c.TLSEXT_TYPE_pre_shared_key,
+        &ext_data,
+        &ext_len,
+    ) != 1) return null;
+    if (ext_data == null or ext_len < 4) return null;
+
+    const ext = ext_data[0..ext_len];
+    const list_len = @as(usize, ext[0]) << 8 | @as(usize, ext[1]);
+    // The list must hold at least one full PskIdentity (>=7 bytes)
+    // and fit inside the extension body.
+    if (list_len < 7) return null;
+    const list_end = std.math.add(usize, 2, list_len) catch return null;
+    if (list_end > ext.len) return null;
+
+    const id_len = @as(usize, ext[2]) << 8 | @as(usize, ext[3]);
+    if (id_len == 0) return null;
+    const id_start: usize = 4;
+    const id_end = std.math.add(usize, id_start, id_len) catch return null;
+    if (id_end > list_end) return null;
+    return ext[id_start..id_end];
+}
+
+var allow_early_data_ex_index_atomic: std.atomic.Value(c_int) =
+    std.atomic.Value(c_int).init(-1);
+
+fn allowEarlyDataExIndex() c_int {
+    const idx = allow_early_data_ex_index_atomic.load(.acquire);
+    if (idx != -1) return idx;
+    const new_idx = c.zbssl_SSL_CTX_get_ex_new_index(0, null, null, null, allowEarlyDataFreeCallback);
+    if (allow_early_data_ex_index_atomic.cmpxchgStrong(-1, new_idx, .acq_rel, .acquire)) |observed| {
+        return observed;
+    }
+    return new_idx;
+}
+
+fn allowEarlyDataFreeCallback(
+    parent: ?*anyopaque,
+    ptr: ?*anyopaque,
+    ad: ?*c.CRYPTO_EX_DATA,
+    idx: c_int,
+    argl: c_long,
+    argp: ?*anyopaque,
+) callconv(.c) void {
+    _ = .{ parent, ad, idx, argl, argp };
+    if (ptr) |p| {
+        const h: *AllowEarlyDataHolder = @ptrCast(@alignCast(p));
+        c_alloc.destroy(h);
+    }
+}
+
+fn allowEarlyDataTrampoline(
+    client_hello: [*c]const c.SSL_CLIENT_HELLO,
+) callconv(.c) c.ssl_select_cert_result_t {
+    // Pull the SSL out of the early-callback context, then walk to
+    // the SSL_CTX where the holder lives.
+    const hello = client_hello orelse return c.ssl_select_cert_success;
+    const ssl = hello.*.ssl orelse return c.ssl_select_cert_success;
+    const ctx = c.zbssl_SSL_get_SSL_CTX(ssl) orelse return c.ssl_select_cert_success;
+    const idx = allowEarlyDataExIndex();
+    const holder_raw = c.zbssl_SSL_CTX_get_ex_data(ctx, idx) orelse
+        return c.ssl_select_cert_success;
+    const holder: *const AllowEarlyDataHolder = @ptrCast(@alignCast(holder_raw));
+
+    // Stash the ClientHello pointer so `Conn.peerSessionId()` can
+    // reach the pre_shared_key extension during the callback. The
+    // BoringSSL hook is synchronous, so a threadlocal is enough;
+    // restore the previous value (typically null) on exit so
+    // nested or re-entrant calls compose cleanly.
+    const prev = current_client_hello;
+    current_client_hello = @ptrCast(hello);
+    defer current_client_hello = prev;
+
+    var conn: Conn = .{ .inner = ssl };
+    const allow = holder.cb(holder.user_data, &conn);
+    if (!allow) {
+        // Disable 0-RTT for this connection. BoringSSL will fall
+        // back to a normal 1-RTT handshake; downstream code can read
+        // `Conn.earlyDataReason()` to confirm
+        // `ssl_early_data_disabled` was the cause.
+        c.zbssl_SSL_set_early_data_enabled(ssl, 0);
+    }
+    // Always return success from the early callback — returning
+    // `ssl_select_cert_error` would abort the handshake, but the
+    // anti-replay use case only requires denying 0-RTT, not killing
+    // the connection. Aborts belong to a separate hook the embedder
+    // owns.
+    return c.ssl_select_cert_success;
 }
 
 // -- SSL ex-data for opaque user pointer ---------------------------------

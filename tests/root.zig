@@ -6,4 +6,5 @@ test {
     _ = @import("quic_bridge.zig");
     _ = @import("tls_session.zig");
     _ = @import("tls_keylog.zig");
+    _ = @import("tls_early_data_callback.zig");
 }
