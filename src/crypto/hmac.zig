@@ -69,7 +69,7 @@ pub fn Hmac(comptime alg: Algorithm) type {
 }
 
 test "HmacSha256 RFC 4231 test case 1" {
-    const key = [_]u8{0x0b} ** 20;
+    const key = @as([20]u8, @splat(0x0b));
     const got = HmacSha256.auth(&key, "Hi There");
     const want = [_]u8{
         0xb0, 0x34, 0x4c, 0x61, 0xd8, 0xdb, 0x38, 0x53,
