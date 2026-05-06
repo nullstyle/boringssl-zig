@@ -723,20 +723,26 @@ fn alpnSelectCallback(
     var sp: usize = 0;
     while (sp < server.len) {
         const sl: usize = server[sp];
-        if (sp + 1 + sl > server.len) break;
-        const sproto = server[sp + 1 .. sp + 1 + sl];
+        // Checked end-of-entry math: every step against peer-controlled
+        // bytes must fail closed, never wrap.
+        const s_end = std.math.add(usize, sp, 1) catch break;
+        const s_proto_end = std.math.add(usize, s_end, sl) catch break;
+        if (s_proto_end > server.len) break;
+        const sproto = server[s_end..s_proto_end];
         var cp: usize = 0;
         while (cp < client.len) {
             const cl: usize = client[cp];
-            if (cp + 1 + cl > client.len) break;
-            if (cl == sl and std.mem.eql(u8, sproto, client[cp + 1 .. cp + 1 + cl])) {
+            const c_end = std.math.add(usize, cp, 1) catch break;
+            const c_proto_end = std.math.add(usize, c_end, cl) catch break;
+            if (c_proto_end > client.len) break;
+            if (cl == sl and std.mem.eql(u8, sproto, client[c_end..c_proto_end])) {
                 out.* = sproto.ptr;
                 out_len.* = @intCast(sl);
                 return c.SSL_TLSEXT_ERR_OK;
             }
-            cp += 1 + cl;
+            cp = c_proto_end;
         }
-        sp += 1 + sl;
+        sp = s_proto_end;
     }
     return c.SSL_TLSEXT_ERR_ALERT_FATAL;
 }
@@ -745,7 +751,10 @@ fn buildAlpnWire(protocols: []const []const u8) Error![]u8 {
     var total: usize = 0;
     for (protocols) |p| {
         if (p.len == 0 or p.len > 255) return Error.AlpnInvalid;
-        total += 1 + p.len;
+        // Checked accumulator: sum could overflow with adversarial
+        // caller input (huge protocol list pointers/lengths).
+        const step = std.math.add(usize, 1, p.len) catch return Error.AlpnTooLong;
+        total = std.math.add(usize, total, step) catch return Error.AlpnTooLong;
     }
     if (total == 0 or total > 65535) return Error.AlpnTooLong;
 

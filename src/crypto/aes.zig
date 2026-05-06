@@ -9,6 +9,12 @@
 const std = @import("std");
 const c = @import("c");
 
+pub const Error = error{
+    /// BoringSSL returned a non-success status from `AES_set_encrypt_key`.
+    /// Surfaces unexpected ABI drift; no internal detail is propagated.
+    AesKeyInvalid,
+};
+
 pub const Aes128 = Block(128);
 pub const Aes256 = Block(256);
 
@@ -25,13 +31,15 @@ pub fn Block(comptime key_bits: comptime_int) type {
 
         inner: c.AES_KEY,
 
-        pub fn init(key: *const Key) Self {
+        pub fn init(key: *const Key) Error!Self {
             var self: Self = .{ .inner = undefined };
-            // BoringSSL: returns 0 on success. The only failure modes are
-            // invalid `bits` (we hard-code 128/256) or null pointers (Zig
-            // type system rules them out), so we never expect non-zero.
+            // BoringSSL: returns 0 on success. The only documented
+            // failure modes are invalid `bits` (we hard-code 128/256)
+            // or null pointers (Zig's type system rules them out), but
+            // surface a typed error rather than panic if BoringSSL ever
+            // changes the contract.
             const rc = c.zbssl_AES_set_encrypt_key(key, key_bits, &self.inner);
-            std.debug.assert(rc == 0);
+            if (rc != 0) return Error.AesKeyInvalid;
             return self;
         }
 
@@ -52,7 +60,7 @@ test "AES-128 single block: FIPS 197 Appendix B" {
     const pt = fromHex("3243f6a8885a308d313198a2e0370734");
     const want = fromHex("3925841d02dc09fbdc118597196a0b32");
 
-    const aes = Aes128.init(&key);
+    const aes = try Aes128.init(&key);
     var out: [16]u8 = undefined;
     aes.encryptBlock(&pt, &out);
     try std.testing.expectEqualSlices(u8, &want, &out);
@@ -63,7 +71,7 @@ test "AES-128 single block: FIPS 197 Appendix C.1" {
     const pt = fromHex("00112233445566778899aabbccddeeff");
     const want = fromHex("69c4e0d86a7b0430d8cdb78070b4c55a");
 
-    const aes = Aes128.init(&key);
+    const aes = try Aes128.init(&key);
     var out: [16]u8 = undefined;
     aes.encryptBlock(&pt, &out);
     try std.testing.expectEqualSlices(u8, &want, &out);
@@ -74,7 +82,7 @@ test "AES-256 single block: FIPS 197 Appendix C.3" {
     const pt = fromHex("00112233445566778899aabbccddeeff");
     const want = fromHex("8ea2b7ca516745bfeafc49904b496089");
 
-    const aes = Aes256.init(&key);
+    const aes = try Aes256.init(&key);
     var out: [16]u8 = undefined;
     aes.encryptBlock(&pt, &out);
     try std.testing.expectEqualSlices(u8, &want, &out);

@@ -26,6 +26,13 @@ pub const Algorithm = enum {
     }
 };
 
+pub const Error = error{
+    /// BoringSSL returned a non-success status from a hash primitive.
+    /// Surfaces (rare) C-side failure or ABI drift; no internal detail
+    /// is propagated.
+    HashFailed,
+};
+
 pub const Sha256 = Hash(.sha256);
 pub const Sha384 = Hash(.sha384);
 pub const Sha512 = Hash(.sha512);
@@ -45,47 +52,47 @@ pub fn Hash(comptime alg: Algorithm) type {
             .sha384, .sha512 => c.SHA512_CTX,
         };
 
-        pub fn init() Self {
+        pub fn init() Error!Self {
             var self: Self = .{ .ctx = undefined };
             const ok = switch (alg) {
                 .sha256 => c.zbssl_SHA256_Init(&self.ctx),
                 .sha384 => c.zbssl_SHA384_Init(&self.ctx),
                 .sha512 => c.zbssl_SHA512_Init(&self.ctx),
             };
-            std.debug.assert(ok == 1);
+            if (ok != 1) return Error.HashFailed;
             return self;
         }
 
-        pub fn update(self: *Self, data: []const u8) void {
+        pub fn update(self: *Self, data: []const u8) Error!void {
             const ok = switch (alg) {
                 .sha256 => c.zbssl_SHA256_Update(&self.ctx, data.ptr, data.len),
                 .sha384 => c.zbssl_SHA384_Update(&self.ctx, data.ptr, data.len),
                 .sha512 => c.zbssl_SHA512_Update(&self.ctx, data.ptr, data.len),
             };
-            std.debug.assert(ok == 1);
+            if (ok != 1) return Error.HashFailed;
         }
 
-        pub fn finalDigest(self: *Self) Digest {
+        pub fn finalDigest(self: *Self) Error!Digest {
             var out: Digest = undefined;
             const ok = switch (alg) {
                 .sha256 => c.zbssl_SHA256_Final(&out, &self.ctx),
                 .sha384 => c.zbssl_SHA384_Final(&out, &self.ctx),
                 .sha512 => c.zbssl_SHA512_Final(&out, &self.ctx),
             };
-            std.debug.assert(ok == 1);
+            if (ok != 1) return Error.HashFailed;
             return out;
         }
 
-        pub fn hash(input: []const u8) Digest {
-            var s = Self.init();
-            s.update(input);
+        pub fn hash(input: []const u8) Error!Digest {
+            var s = try Self.init();
+            try s.update(input);
             return s.finalDigest();
         }
     };
 }
 
 test "Sha256.hash returns the canonical 'abc' digest" {
-    const got = Sha256.hash("abc");
+    const got = try Sha256.hash("abc");
     const want = [_]u8{
         0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
         0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
@@ -96,10 +103,10 @@ test "Sha256.hash returns the canonical 'abc' digest" {
 }
 
 test "Sha256 streaming matches one-shot" {
-    var s = Sha256.init();
-    s.update("a");
-    s.update("b");
-    s.update("c");
-    const streamed = s.finalDigest();
-    try std.testing.expectEqualSlices(u8, &Sha256.hash("abc"), &streamed);
+    var s = try Sha256.init();
+    try s.update("a");
+    try s.update("b");
+    try s.update("c");
+    const streamed = try s.finalDigest();
+    try std.testing.expectEqualSlices(u8, &(try Sha256.hash("abc")), &streamed);
 }

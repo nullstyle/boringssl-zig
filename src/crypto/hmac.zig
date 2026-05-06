@@ -4,6 +4,13 @@ const hash_mod = @import("hash.zig");
 
 pub const Algorithm = hash_mod.Algorithm;
 
+pub const Error = error{
+    /// BoringSSL returned a non-success status from an HMAC primitive.
+    /// Surfaces (rare) C-side allocation failures or unexpected ABI
+    /// drift; the wrapper does not propagate BoringSSL error strings.
+    HmacFailed,
+};
+
 pub const HmacSha256 = Hmac(.sha256);
 pub const HmacSha384 = Hmac(.sha384);
 pub const HmacSha512 = Hmac(.sha512);
@@ -26,7 +33,7 @@ pub fn Hmac(comptime alg: Algorithm) type {
             };
         }
 
-        pub fn init(key: []const u8) Self {
+        pub fn init(key: []const u8) Error!Self {
             var self: Self = .{ .ctx = undefined };
             c.zbssl_HMAC_CTX_init(&self.ctx);
             const ok = c.zbssl_HMAC_Init_ex(
@@ -36,7 +43,10 @@ pub fn Hmac(comptime alg: Algorithm) type {
                 evpMd(),
                 null,
             );
-            std.debug.assert(ok == 1);
+            if (ok != 1) {
+                c.zbssl_HMAC_CTX_cleanup(&self.ctx);
+                return Error.HmacFailed;
+            }
             return self;
         }
 
@@ -44,25 +54,24 @@ pub fn Hmac(comptime alg: Algorithm) type {
             c.zbssl_HMAC_CTX_cleanup(&self.ctx);
         }
 
-        pub fn update(self: *Self, data: []const u8) void {
+        pub fn update(self: *Self, data: []const u8) Error!void {
             const ok = c.zbssl_HMAC_Update(&self.ctx, data.ptr, data.len);
-            std.debug.assert(ok == 1);
+            if (ok != 1) return Error.HmacFailed;
         }
 
-        pub fn finalDigest(self: *Self) Digest {
+        pub fn finalDigest(self: *Self) Error!Digest {
             var out: Digest = undefined;
             var out_len: c_uint = 0;
             const ok = c.zbssl_HMAC_Final(&self.ctx, &out, &out_len);
-            std.debug.assert(ok == 1);
-            std.debug.assert(out_len == digest_size);
+            if (ok != 1 or out_len != digest_size) return Error.HmacFailed;
             return out;
         }
 
         /// One-shot HMAC. Caller owns no resources.
-        pub fn auth(key: []const u8, data: []const u8) Digest {
-            var h = Self.init(key);
+        pub fn auth(key: []const u8, data: []const u8) Error!Digest {
+            var h = try Self.init(key);
             defer h.deinit();
-            h.update(data);
+            try h.update(data);
             return h.finalDigest();
         }
     };
@@ -70,7 +79,7 @@ pub fn Hmac(comptime alg: Algorithm) type {
 
 test "HmacSha256 RFC 4231 test case 1" {
     const key = @as([20]u8, @splat(0x0b));
-    const got = HmacSha256.auth(&key, "Hi There");
+    const got = try HmacSha256.auth(&key, "Hi There");
     const want = [_]u8{
         0xb0, 0x34, 0x4c, 0x61, 0xd8, 0xdb, 0x38, 0x53,
         0x5c, 0xa8, 0xaf, 0xce, 0xaf, 0x0b, 0xf1, 0x2b,

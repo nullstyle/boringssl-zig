@@ -1,3 +1,14 @@
+//! BoringSSL error-queue helpers.
+//!
+//! The strings produced by `lastMessage`, `popErrorString`, and
+//! `popErrorStringInto` include BoringSSL-internal error names, source
+//! file paths, and line numbers (for example
+//! `error:1000007d:SSL routines:OPENSSL_internal:CERTIFICATE_VERIFY_FAILED`).
+//! That is useful for local logging and developer diagnostics, but it
+//! must never be returned to network peers — it leaks library identity,
+//! version detail, and internal parser names that aid fingerprinting.
+//! See the project hardening notes for the public-response policy.
+
 const std = @import("std");
 const c = @import("c");
 

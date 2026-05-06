@@ -10,7 +10,7 @@ pub fn main(init: std.process.Init) !void {
     const stdout = &stdout_writer.interface;
 
     const message = "hello from zig + boringssl";
-    const digest = boringssl.crypto.hash.Sha256.hash(message);
+    const digest = try boringssl.crypto.hash.Sha256.hash(message);
 
     try stdout.print("sha256(\"{s}\") = ", .{message});
     for (digest) |byte| try stdout.print("{x:0>2}", .{byte});

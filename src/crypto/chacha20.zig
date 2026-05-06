@@ -16,6 +16,11 @@ pub const nonce_len: usize = 12;
 pub const Key = [key_len]u8;
 pub const Nonce = [nonce_len]u8;
 
+pub const Error = error{
+    /// `output.len != input.len`. Caller violated the keystream contract.
+    LengthMismatch,
+};
+
 /// Run the ChaCha20 keystream over `input` and write the result to
 /// `output`. `output.len` must equal `input.len`. `counter` selects
 /// which 64-byte block of the keystream to start at; 0 is the first
@@ -26,8 +31,8 @@ pub fn xor(
     key: *const Key,
     nonce: *const Nonce,
     counter: u32,
-) void {
-    std.debug.assert(output.len == input.len);
+) Error!void {
+    if (output.len != input.len) return Error.LengthMismatch;
     c.zbssl_CRYPTO_chacha_20(output.ptr, input.ptr, input.len, key, nonce, counter);
 }
 
@@ -71,7 +76,7 @@ test "ChaCha20 RFC 8439 §2.4.2 test vector" {
         "874d",
     );
     var got: [114]u8 = undefined;
-    xor(&got, plaintext, &key, &nonce, 1);
+    try xor(&got, plaintext, &key, &nonce, 1);
     try std.testing.expectEqualSlices(u8, &want, &got);
 }
 
@@ -99,8 +104,16 @@ test "xor is involutive (encrypt twice = identity)" {
     const nonce: Nonce = @splat(0x33);
     const plaintext = "the quick brown fox jumps over the lazy dog";
     var ct: [plaintext.len]u8 = undefined;
-    xor(&ct, plaintext, &key, &nonce, 0);
+    try xor(&ct, plaintext, &key, &nonce, 0);
     var pt: [plaintext.len]u8 = undefined;
-    xor(&pt, &ct, &key, &nonce, 0);
+    try xor(&pt, &ct, &key, &nonce, 0);
     try std.testing.expectEqualSlices(u8, plaintext, &pt);
+}
+
+test "xor returns LengthMismatch on caller mismatch" {
+    const key: Key = @splat(0);
+    const nonce: Nonce = @splat(0);
+    var out: [4]u8 = undefined;
+    const in: [3]u8 = @splat(0);
+    try std.testing.expectError(Error.LengthMismatch, xor(&out, &in, &key, &nonce, 0));
 }

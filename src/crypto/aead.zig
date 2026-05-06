@@ -89,7 +89,11 @@ pub fn Aead(comptime alg: Algorithm) type {
             ad: []const u8,
             plaintext: []const u8,
         ) Error!usize {
-            if (dst.len < plaintext.len + tag_len) return Error.OutputTooSmall;
+            // Checked add: a maliciously huge plaintext.len could overflow
+            // when summing with tag_len, masking the size check.
+            const required = std.math.add(usize, plaintext.len, tag_len) catch
+                return Error.OutputTooSmall;
+            if (dst.len < required) return Error.OutputTooSmall;
             var out_len: usize = 0;
             const ok = c.zbssl_EVP_AEAD_CTX_seal(
                 self.ctx,
@@ -119,8 +123,12 @@ pub fn Aead(comptime alg: Algorithm) type {
             ad: []const u8,
             ciphertext: []const u8,
         ) Error!usize {
-            if (ciphertext.len < tag_len) return Error.Auth;
-            if (dst.len < ciphertext.len - tag_len) return Error.OutputTooSmall;
+            // Checked sub: ciphertext shorter than tag is a forged short
+            // input; surface as Auth failure rather than letting the
+            // subtract underflow.
+            const required = std.math.sub(usize, ciphertext.len, tag_len) catch
+                return Error.Auth;
+            if (dst.len < required) return Error.OutputTooSmall;
             var out_len: usize = 0;
             const ok = c.zbssl_EVP_AEAD_CTX_open(
                 self.ctx,

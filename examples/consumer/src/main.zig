@@ -14,7 +14,7 @@ pub fn main(init: std.process.Init) !void {
     const stdout = &stdout_writer.interface;
 
     const message = "hello, world!";
-    const digest = boringssl.crypto.hash.Sha256.hash(message);
+    const digest = try boringssl.crypto.hash.Sha256.hash(message);
 
     try stdout.print("consumer says: sha256(\"{s}\") = ", .{message});
     for (digest) |byte| try stdout.print("{x:0>2}", .{byte});
@@ -24,7 +24,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 test "consumer can compute SHA-256 of empty input" {
-    const digest = boringssl.crypto.hash.Sha256.hash("");
+    const digest = try boringssl.crypto.hash.Sha256.hash("");
     const want = [_]u8{
         0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14,
         0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
@@ -35,7 +35,7 @@ test "consumer can compute SHA-256 of empty input" {
 }
 
 test "consumer can compute HMAC-SHA-256" {
-    const got = boringssl.crypto.hmac.HmacSha256.auth("Jefe", "what do ya want for nothing?");
+    const got = try boringssl.crypto.hmac.HmacSha256.auth("Jefe", "what do ya want for nothing?");
     const want = [_]u8{
         0x5b, 0xdc, 0xc1, 0x46, 0xbf, 0x60, 0x75, 0x4e,
         0x6a, 0x04, 0x24, 0x26, 0x08, 0x95, 0x75, 0xc7,
