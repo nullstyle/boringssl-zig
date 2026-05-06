@@ -1,6 +1,6 @@
 [tools]
 just = "1.49.0"
-zig = "0.16.0"
+zig = "master"
 cmake = "4.3.2"
 ninja = "1.13.2"
 go = "1.23.4"
