@@ -4,7 +4,9 @@ A Zig wrapper around BoringSSL, intended for publication as a Zig package.
 Builds BoringSSL natively from `build.zig` — consumers need only Zig
 0.16.0; CMake is optional and only used as a verification path.
 
-**Status: 0.5.0 — TLS 1.3 session resumption + QUIC 0-RTT, ChaCha20 stream cipher, error-queue diagnostics, and SSLKEYLOGFILE callback.**
+**Status: 0.6.0 — AES-128/256-ECB single-block decrypt
+(`Aes128.initDecrypt` / `decryptBlock`) on top of 0.5.0. Drives
+QUIC-LB draft-21 §5.5.1 single-pass decode in quic-zig.**
 
 | Phase | What | Status |
 | --- | --- | --- |
@@ -16,6 +18,7 @@ Builds BoringSSL natively from `build.zig` — consumers need only Zig
 | 0.3 | TLS server + cert/key loading + ALPN + QUIC `SSL_QUIC_METHOD` bridge | ✅ |
 | 0.4 | TLS 1.3 session resumption + QUIC 0-RTT (`tls.Session`, new-session callback, early-data status) | ✅ |
 | 0.5 | ChaCha20 stream cipher, `errors.popErrorString`, `Context.setKeylogCallback` | ✅ |
+| 0.6 | AES-128/256-ECB single-block decrypt for QUIC-LB §5.5.1 | ✅ |
 
 Verified targets: `aarch64-macos`, `x86_64-macos`, `aarch64-linux-musl`,
 `x86_64-linux-musl`. KAT tests run natively on macOS targets and on x86_64

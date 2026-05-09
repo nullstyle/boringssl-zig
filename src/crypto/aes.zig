@@ -1,10 +1,26 @@
-//! Single-block AES-ECB encryption.
+//! Single-block AES-ECB encryption and decryption.
 //!
 //! Used for QUIC header protection (RFC 9001 §5.4.3): a 16-byte sample is
 //! AES-ECB-encrypted under the HP key, and the first 5 bytes of the
-//! resulting block become the mask. **This is not a general-purpose
-//! encryption API** — ECB is unsafe for messages longer than one block.
-//! Use `crypto.aead.*` for that.
+//! resulting block become the mask. The decrypt direction (added in
+//! v0.6.0) supports QUIC-LB
+//! ([draft-ietf-quic-load-balancers-21][quic-lb]) single-pass §5.5.1
+//! load-balancer-side decoding, which inverts the §5.4.1 single-pass
+//! encrypt the server uses to mint connection IDs.
+//!
+//! [quic-lb]: https://datatracker.ietf.org/doc/draft-ietf-quic-load-balancers/
+//!
+//! **This is not a general-purpose encryption API** — ECB is unsafe for
+//! messages longer than one block. Use `crypto.aead.*` for that.
+//!
+//! ## Encrypt vs decrypt schedules
+//!
+//! AES-128/256 use *different* round-key schedules for encrypt and
+//! decrypt. `init` and `initDecrypt` populate the embedded `AES_KEY`
+//! for one direction only; calling `encryptBlock` after `initDecrypt`
+//! (or vice versa) produces undefined output without erroring. Use
+//! the matched pair: `init` + `encryptBlock`, or `initDecrypt` +
+//! `decryptBlock`.
 
 const std = @import("std");
 const c = @import("c");
@@ -43,8 +59,28 @@ pub fn Block(comptime key_bits: comptime_int) type {
             return self;
         }
 
+        /// Initialise an `AES_KEY` for the **decrypt** direction.
+        /// Same failure-mode contract as `init`, but the embedded
+        /// schedule is set up via `AES_set_decrypt_key` so the cipher
+        /// state can drive `decryptBlock`. Calling `encryptBlock` on
+        /// a `Self` produced here is undefined behaviour — the
+        /// schedules differ between the two directions.
+        pub fn initDecrypt(key: *const Key) Error!Self {
+            var self: Self = .{ .inner = undefined };
+            const rc = c.zbssl_AES_set_decrypt_key(key, key_bits, &self.inner);
+            if (rc != 0) return Error.AesKeyInvalid;
+            return self;
+        }
+
         pub fn encryptBlock(self: *const Self, in: *const Block16, out: *Block16) void {
             c.zbssl_AES_encrypt(in, out, &self.inner);
+        }
+
+        /// Decrypt a single 16-byte AES block. The receiver MUST have
+        /// been built via `initDecrypt`; calling this on an `init`-
+        /// constructed `Self` produces undefined output.
+        pub fn decryptBlock(self: *const Self, in: *const Block16, out: *Block16) void {
+            c.zbssl_AES_decrypt(in, out, &self.inner);
         }
     };
 }
@@ -86,4 +122,47 @@ test "AES-256 single block: FIPS 197 Appendix C.3" {
     var out: [16]u8 = undefined;
     aes.encryptBlock(&pt, &out);
     try std.testing.expectEqualSlices(u8, &want, &out);
+}
+
+test "AES-128 decrypt: FIPS 197 Appendix C.1 round-trip" {
+    // §C.1 lists the encrypt direction; the decrypt direction is the
+    // exact inverse — feeding the ciphertext through `decryptBlock`
+    // under the same key recovers the plaintext byte-for-byte.
+    const key = fromHex("000102030405060708090a0b0c0d0e0f");
+    const ct = fromHex("69c4e0d86a7b0430d8cdb78070b4c55a");
+    const want = fromHex("00112233445566778899aabbccddeeff");
+
+    const aes = try Aes128.initDecrypt(&key);
+    var out: [16]u8 = undefined;
+    aes.decryptBlock(&ct, &out);
+    try std.testing.expectEqualSlices(u8, &want, &out);
+}
+
+test "AES-256 decrypt: FIPS 197 Appendix C.3 round-trip" {
+    const key = fromHex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+    const ct = fromHex("8ea2b7ca516745bfeafc49904b496089");
+    const want = fromHex("00112233445566778899aabbccddeeff");
+
+    const aes = try Aes256.initDecrypt(&key);
+    var out: [16]u8 = undefined;
+    aes.decryptBlock(&ct, &out);
+    try std.testing.expectEqualSlices(u8, &want, &out);
+}
+
+test "AES-128: encrypt/decrypt round-trip on a random plaintext" {
+    // Reinforces the invariant that the encrypt and decrypt schedules
+    // are inverses: encrypting then decrypting under the same key
+    // returns the original bytes for any input, not just the FIPS
+    // vectors.
+    const key = fromHex("8f95f09245765f80256934e50c66207f");
+    const pt = fromHex("ed793a51d49b8f5fee080dbf48c0d1e5");
+
+    const enc = try Aes128.init(&key);
+    var ct: [16]u8 = undefined;
+    enc.encryptBlock(&pt, &ct);
+
+    const dec = try Aes128.initDecrypt(&key);
+    var out: [16]u8 = undefined;
+    dec.decryptBlock(&ct, &out);
+    try std.testing.expectEqualSlices(u8, &pt, &out);
 }

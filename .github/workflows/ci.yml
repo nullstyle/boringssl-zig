@@ -9,7 +9,7 @@ on:
 # Toolchain (zig + cmake + ninja + go) comes from mise.toml. Pinning
 # `zig = "master"` accepts toolchain churn — we re-resolve master on
 # every CI run — in exchange for working `zig build test --fuzz` and
-# the latest language fixes downstream consumers (e.g. nullq) need.
+# the latest language fixes downstream consumers (e.g. quic-zig) need.
 jobs:
   native:
     name: native test (ubuntu-latest)

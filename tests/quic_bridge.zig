@@ -4,7 +4,7 @@
 //!
 //! This is the v0.4.0 acceptance test for the QUIC bridge: if it
 //! passes, the SSL_QUIC_METHOD ABI shim is wired correctly and a
-//! downstream QUIC stack (e.g. nullq) can drive a real handshake.
+//! downstream QUIC stack (e.g. quic_zig) can drive a real handshake.
 
 const std = @import("std");
 const boringssl = @import("boringssl");
@@ -146,7 +146,7 @@ test "QUIC TLS handshake completes through the Method bridge" {
     try server_ep.conn.setQuicMethod(&bridge_method);
 
     // Both sides need transport_parameters set before the handshake.
-    // The actual bytes are opaque to the bridge — nullq encodes
+    // The actual bytes are opaque to the bridge — quic_zig encodes
     // RFC 9000 §18 form; here we just send a non-empty placeholder.
     const placeholder = [_]u8{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07 };
     try client_ep.conn.setQuicTransportParams(&placeholder);

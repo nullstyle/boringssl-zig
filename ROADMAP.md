@@ -1,7 +1,7 @@
 # boringssl-zig roadmap
 
 This document captures planned releases driven primarily by
-[`nullq`](../nullq)'s production-grade requirements, with one eye on
+[`quic-zig`](../quic-zig)'s production-grade requirements, with one eye on
 keeping the wrapper generally useful for non-QUIC consumers.
 
 ## Released
@@ -73,8 +73,28 @@ keeping the wrapper generally useful for non-QUIC consumers.
     handshake.
 
   Shipped together with v0.4.0 in a single bump to 0.5.0, since
-  both are nullq-driven and tightly related to the production-grade
+  both are quic-zig-driven and tightly related to the production-grade
   surface. 53/53 tests green.
+- **v0.6.0** (2026-05-08) — AES-128/256-ECB single-block decrypt.
+  Adds:
+  - `crypto.aes.Block(bits).initDecrypt(key)` over
+    `AES_set_decrypt_key`, returning a `Block` whose embedded
+    `AES_KEY` carries the inverse-direction round-key schedule.
+  - `crypto.aes.Block(bits).decryptBlock(in, out)` over
+    `AES_decrypt`. Matched-pair contract documented: pair `init` +
+    `encryptBlock` or `initDecrypt` + `decryptBlock`; mismatching
+    them produces undefined output (different schedules).
+  - FIPS 197 Appendix C.1 / C.3 KATs for AES-128 and AES-256
+    decrypt, plus an encrypt/decrypt round-trip property test under
+    a random key.
+
+  Driven by quic-zig's QUIC-LB
+  ([draft-ietf-quic-load-balancers-21][quic-lb]) §5.5.1 single-pass
+  decode helper: the LB-side decoder needs the inverse of the §5.4.1
+  AES-128-ECB encrypt the server uses to mint connection IDs.
+  65/65 tests green (37 wrapper + 28 KAT).
+
+  [quic-lb]: https://datatracker.ietf.org/doc/draft-ietf-quic-load-balancers/
 
 ## Planned
 
@@ -95,8 +115,8 @@ Things we'd take a PR for but don't drive:
    with the release notes (mirroring the style of v0.2.0).
 3. Push tag to the GitHub origin
    (`git@github.com:nullstyle/boringssl-zig.git`).
-4. Update `nullq`'s `build.zig.zon` to point at the new tarball URL
-   when the bump is intentional. (During development of nullq we
+4. Update `quic-zig`'s `build.zig.zon` to point at the new tarball URL
+   when the bump is intentional. (During development of quic-zig we
    continue using a path dep.)
 
 ## Compatibility
