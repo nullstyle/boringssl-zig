@@ -97,7 +97,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(smoke_exe);
 
     const run_smoke = b.addRunArtifact(smoke_exe);
-    if (b.args) |args| run_smoke.addArgs(args);
+    run_smoke.addPassthruArgs();
     const smoke_step = b.step("run-smoke", "Run BoringSSL smoke executable");
     smoke_step.dependOn(&run_smoke.step);
 
@@ -115,7 +115,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(tls_smoke_exe);
 
     const run_tls_smoke = b.addRunArtifact(tls_smoke_exe);
-    if (b.args) |args| run_tls_smoke.addArgs(args);
+    run_tls_smoke.addPassthruArgs();
     const tls_smoke_step = b.step("run-tls-smoke", "HTTPS round-trip smoke test");
     tls_smoke_step.dependOn(&run_tls_smoke.step);
 

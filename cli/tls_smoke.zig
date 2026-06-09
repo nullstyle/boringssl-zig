@@ -28,11 +28,11 @@ pub fn main(init: std.process.Init) !u8 {
     else
         443;
     const ca_path: [:0]const u8 = if (args.len > 3)
-        try arena.dupeZ(u8, args[3])
+        try arena.dupeSentinel(u8, args[3], 0)
     else
         "/etc/ssl/cert.pem";
 
-    const host = try arena.dupeZ(u8, host_str);
+    const host = try arena.dupeSentinel(u8, host_str, 0);
 
     try stdout.print("connecting to {s}:{d} ...\n", .{ host, port });
     try stdout.flush();

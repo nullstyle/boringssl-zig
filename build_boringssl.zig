@@ -141,11 +141,11 @@ fn sourcePath(b: *Build, src: Options.Src, sub: []const u8) Build.LazyPath {
 /// sources.json).
 fn absolutePath(b: *Build, src: Options.Src, sub: []const u8) []const u8 {
     return switch (src) {
-        .dependency => |d| std.fs.path.join(
+        .dependency => |d| d.builder.root.joinString(b.allocator, sub) catch @panic("OOM"),
+        .local => |root| b.root.joinString(
             b.allocator,
-            &.{ d.builder.build_root.path orelse ".", sub },
+            b.fmt("{s}/{s}", .{ root, sub }),
         ) catch @panic("OOM"),
-        .local => |root| b.pathFromRoot(b.fmt("{s}/{s}", .{ root, sub })),
     };
 }
 
