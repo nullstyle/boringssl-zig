@@ -353,12 +353,11 @@ On Apple Silicon, `act` uses the arm64 variant of `catthehacker/ubuntu:act-lates
 
 ## What's next
 
-- **Tag 0.1.0** in git and push (we have a local `v0.1.0` tag waiting on a
-  remote).
-- **CMake parity in CI**: today only the native zig path runs in CI. Adding
-  the CMake comparison would catch upstream BoringSSL changes that break
-  the verification path; cost is ~3 min extra build time and Go/CMake
-  setup. Worth doing, not load-bearing.
+- **CMake parity remains advisory.** The native Zig path is the supported
+  package-consumer path and is what CI gates today. The CMake comparison is
+  still useful as a local cross-check for upstream BoringSSL source-list drift,
+  but it is not release-blocking unless it can be added without destabilizing
+  the fast consumer CI path.
 
 Out of scope deliberately: FIPS mode and BoringSSL's full upstream test
 suite. Windows native builds use BoringSSL's `OPENSSL_NO_ASM` fallback and
