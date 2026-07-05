@@ -4,10 +4,10 @@ A Zig wrapper around BoringSSL, intended for publication as a Zig package.
 Builds BoringSSL natively from `build.zig` — consumers need only Zig
 0.16.0; CMake is optional and only used as a verification path.
 
-**Status: 0.6.1 — AES-128/256-ECB single-block decrypt
-(`Aes128.initDecrypt` / `decryptBlock`) on top of 0.5.0, plus current
-Zig master compatibility. Drives QUIC-LB draft-21 §5.5.1 single-pass
-decode in quic-zig.**
+**Status: 0.6.2 — AES-128/256-ECB single-block decrypt
+(`Aes128.initDecrypt` / `decryptBlock`) on top of 0.5.0, current
+Zig master compatibility, sanitizer propagation, and less brittle source
+fetching. Drives QUIC-LB draft-21 §5.5.1 single-pass decode in quic-zig.**
 
 | Phase | What | Status |
 | --- | --- | --- |
