@@ -4,10 +4,10 @@ A Zig wrapper around BoringSSL, intended for publication as a Zig package.
 Builds BoringSSL natively from `build.zig` — consumers need only Zig
 0.16.0; CMake is optional and only used as a verification path.
 
-**Status: 0.6.3 — AES-128/256-ECB single-block decrypt
+**Status: 0.6.4 — AES-128/256-ECB single-block decrypt
 (`Aes128.initDecrypt` / `decryptBlock`) on top of 0.5.0, current
 Zig master compatibility, sanitizer propagation, and less brittle source
-fetching, plus Windows SDK macro hygiene for native dependency builds.
+fetching, plus Windows SDK macro hygiene and no-NASM native Windows builds.
 Drives QUIC-LB draft-21 §5.5.1 single-pass decode in quic-zig.**
 
 | Phase | What | Status |
@@ -361,5 +361,6 @@ On Apple Silicon, `act` uses the arm64 variant of `catthehacker/ubuntu:act-lates
   setup. Worth doing, not load-bearing.
 
 Out of scope deliberately: FIPS mode and BoringSSL's full upstream test
-suite. Windows native builds are kept compiling for consumers, but Windows
-packaging and prebuilt archives are not release-blocking yet.
+suite. Windows native builds use BoringSSL's `OPENSSL_NO_ASM` fallback and
+are kept compiling for consumers, but Windows packaging and prebuilt archives
+are not release-blocking yet.

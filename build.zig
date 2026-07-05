@@ -95,6 +95,9 @@ pub fn build(b: *std.Build) void {
         .link_libcpp = true,
     });
     boringssl_mod.addImport("c", c_mod);
+    if (target.result.os.tag == .windows) {
+        boringssl_mod.linkSystemLibrary("ws2_32", .{});
+    }
 
     if (libs.libssl_compile) |c| boringssl_mod.linkLibrary(c);
     if (libs.libcrypto_compile) |c| boringssl_mod.linkLibrary(c);

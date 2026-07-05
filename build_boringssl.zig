@@ -40,6 +40,7 @@ pub fn build(b: *Build, options: Options) Result {
     const sources = loadSources(b, options.src);
 
     const include_path = sourcePath(b, options.src, "include");
+    const is_windows = options.target.result.os.tag == .windows;
 
     // Per-language flags. We deliberately do NOT pass BoringSSL's full
     // upstream warning set (-Werror, -Wshadow, ...): zig cc is built on a
@@ -70,6 +71,7 @@ pub fn build(b: *Build, options: Options) Result {
     libcrypto_mod.addCMacro("BORINGSSL_PREFIX", options.boringssl_prefix);
     libcrypto_mod.addCMacro("_GNU_SOURCE", "1");
     addWindowsHeaderMacros(libcrypto_mod);
+    if (is_windows) libcrypto_mod.addCMacro("OPENSSL_NO_ASM", "1");
 
     const libcrypto = b.addLibrary(.{
         .linkage = .static,
@@ -92,6 +94,7 @@ pub fn build(b: *Build, options: Options) Result {
     libssl_mod.addCMacro("BORINGSSL_PREFIX", options.boringssl_prefix);
     libssl_mod.addCMacro("_GNU_SOURCE", "1");
     addWindowsHeaderMacros(libssl_mod);
+    if (is_windows) libssl_mod.addCMacro("OPENSSL_NO_ASM", "1");
 
     const libssl = b.addLibrary(.{
         .linkage = .static,
