@@ -69,6 +69,7 @@ pub fn build(b: *Build, options: Options) Result {
     libcrypto_mod.addCMacro("BORINGSSL_IMPLEMENTATION", "1");
     libcrypto_mod.addCMacro("BORINGSSL_PREFIX", options.boringssl_prefix);
     libcrypto_mod.addCMacro("_GNU_SOURCE", "1");
+    addWindowsHeaderMacros(libcrypto_mod);
 
     const libcrypto = b.addLibrary(.{
         .linkage = .static,
@@ -90,6 +91,7 @@ pub fn build(b: *Build, options: Options) Result {
     libssl_mod.addCMacro("BORINGSSL_IMPLEMENTATION", "1");
     libssl_mod.addCMacro("BORINGSSL_PREFIX", options.boringssl_prefix);
     libssl_mod.addCMacro("_GNU_SOURCE", "1");
+    addWindowsHeaderMacros(libssl_mod);
 
     const libssl = b.addLibrary(.{
         .linkage = .static,
@@ -110,6 +112,14 @@ pub fn build(b: *Build, options: Options) Result {
         .libssl = libssl,
         .include_path = include_path,
     };
+}
+
+fn addWindowsHeaderMacros(mod: *Module) void {
+    // Prevent Windows SDK headers from defining macros such as X509_NAME that
+    // collide with BoringSSL's public type names when building on Windows.
+    mod.addCMacro("WIN32_LEAN_AND_MEAN", "1");
+    mod.addCMacro("NOMINMAX", "1");
+    mod.addCMacro("NOCRYPT", "1");
 }
 
 fn loadSources(b: *Build, src: Options.Src) std.json.Value {
