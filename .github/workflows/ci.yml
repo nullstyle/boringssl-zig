@@ -38,6 +38,27 @@ jobs:
         working-directory: examples/consumer
         run: zig build test --summary all
 
+  sanitize:
+    name: sanitize-c=${{ matrix.mode }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [off, trap, full]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Set up mise (zig master + project tools)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: zig build test -Dsanitize-c=${{ matrix.mode }}
+        run: zig build test -Dsanitize-c=${{ matrix.mode }} --summary all
+
   cross:
     name: cross ${{ matrix.target }}
     runs-on: ubuntu-latest

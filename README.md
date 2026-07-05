@@ -4,9 +4,10 @@ A Zig wrapper around BoringSSL, intended for publication as a Zig package.
 Builds BoringSSL natively from `build.zig` — consumers need only Zig
 0.16.0; CMake is optional and only used as a verification path.
 
-**Status: 0.6.0 — AES-128/256-ECB single-block decrypt
-(`Aes128.initDecrypt` / `decryptBlock`) on top of 0.5.0. Drives
-QUIC-LB draft-21 §5.5.1 single-pass decode in quic-zig.**
+**Status: 0.6.1 — AES-128/256-ECB single-block decrypt
+(`Aes128.initDecrypt` / `decryptBlock`) on top of 0.5.0, plus current
+Zig master compatibility. Drives QUIC-LB draft-21 §5.5.1 single-pass
+decode in quic-zig.**
 
 | Phase | What | Status |
 | --- | --- | --- |
@@ -70,6 +71,7 @@ copy without ODR collisions.
 zig build test                                 # native (default)
 zig build test -Dboringssl-source=zig          # explicit native
 zig build test -Dboringssl-source=cmake        # use vendor/ prebuilt
+zig build test -Dsanitize-c=full               # UBSan over BoringSSL C/C++
 just verify-paths                              # both paths must pass KATs
 ```
 
@@ -78,6 +80,11 @@ The CMake path remains for cross-checking the native build:
 `libcrypto.a`/`libssl.a` reproducible by SHA-256, recorded in
 `manifest.json`. If the native build ever diverges from upstream, the
 KATs against the CMake build are the comparison oracle.
+
+`-Dsanitize-c=off|trap|full` overrides Zig's C/UB sanitizer mode for the
+native BoringSSL C++ libraries, translate-c bindings, wrapper module, and
+tests. `trap`/`full` require `-Dboringssl-source=zig`; prebuilt CMake
+archives cannot be retroactively instrumented.
 
 ## Wrapper API
 

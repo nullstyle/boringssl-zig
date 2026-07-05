@@ -20,6 +20,7 @@ pub const Result = struct {
 pub const Options = struct {
     target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    sanitize_c: ?std.zig.SanitizeC = null,
     boringssl_prefix: []const u8 = "zbssl",
     /// BoringSSL source location. Either a `Build.Dependency` (the
     /// `zig fetch`-tracked tarball, default for published consumers) or
@@ -60,6 +61,7 @@ pub fn build(b: *Build, options: Options) Result {
     const libcrypto_mod = b.createModule(.{
         .target = options.target,
         .optimize = options.optimize,
+        .sanitize_c = options.sanitize_c,
         .link_libc = true,
         .link_libcpp = true,
     });
@@ -80,6 +82,7 @@ pub fn build(b: *Build, options: Options) Result {
     const libssl_mod = b.createModule(.{
         .target = options.target,
         .optimize = options.optimize,
+        .sanitize_c = options.sanitize_c,
         .link_libc = true,
         .link_libcpp = true,
     });

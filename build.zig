@@ -5,9 +5,21 @@ const prefix = "zbssl";
 
 const Source = enum { zig, cmake };
 
+fn parseSanitizeC(value: []const u8) std.zig.SanitizeC {
+    if (std.mem.eql(u8, value, "off")) return .off;
+    if (std.mem.eql(u8, value, "trap")) return .trap;
+    if (std.mem.eql(u8, value, "full")) return .full;
+    std.debug.panic("invalid -Dsanitize-c value '{s}' (expected off, trap, or full)", .{value});
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const sanitize_c: ?std.zig.SanitizeC = if (b.option(
+        []const u8,
+        "sanitize-c",
+        "Override C/UB sanitizer mode for BoringSSL and wrapper modules: off, trap, or full",
+    )) |mode| parseSanitizeC(mode) else null;
 
     const source = b.option(
         Source,
@@ -31,6 +43,9 @@ pub fn build(b: *std.Build) void {
 
     const libs: Libs = switch (source) {
         .cmake => blk: {
+            if (sanitize_c != null and sanitize_c != .off) {
+                std.debug.panic("-Dsanitize-c={t} requires -Dboringssl-source=zig; prebuilt cmake archives cannot be instrumented", .{sanitize_c.?});
+            }
             const vendor_dir = b.fmt("vendor/boringssl-prebuilt/{s}", .{boringssl_target});
             break :blk .{
                 .libcrypto_path = b.path(b.fmt("{s}/lib/libcrypto.a", .{vendor_dir})),
@@ -43,6 +58,7 @@ pub fn build(b: *std.Build) void {
             const native = build_boringssl.build(b, .{
                 .target = target,
                 .optimize = optimize,
+                .sanitize_c = sanitize_c,
                 .boringssl_prefix = prefix,
                 .src = .{ .dependency = boringssl_src_dep },
             });
@@ -67,12 +83,14 @@ pub fn build(b: *std.Build) void {
     translate_c.addIncludePath(libs.include_path);
     translate_c.defineCMacro("BORINGSSL_PREFIX", prefix);
     const c_mod = translate_c.createModule();
+    c_mod.sanitize_c = sanitize_c;
 
     // Public wrapper module.
     const boringssl_mod = b.addModule("boringssl", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .sanitize_c = sanitize_c,
         .link_libc = true,
         .link_libcpp = true,
     });
@@ -88,6 +106,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("cli/smoke.zig"),
         .target = target,
         .optimize = optimize,
+        .sanitize_c = sanitize_c,
     });
     smoke_mod.addImport("boringssl", boringssl_mod);
     const smoke_exe = b.addExecutable(.{
@@ -106,6 +125,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("cli/tls_smoke.zig"),
         .target = target,
         .optimize = optimize,
+        .sanitize_c = sanitize_c,
     });
     tls_smoke_mod.addImport("boringssl", boringssl_mod);
     const tls_smoke_exe = b.addExecutable(.{
@@ -130,6 +150,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tests/root.zig"),
         .target = target,
         .optimize = optimize,
+        .sanitize_c = sanitize_c,
     });
     kat_mod.addImport("boringssl", boringssl_mod);
     const kat_tests = b.addTest(.{ .root_module = kat_mod });
