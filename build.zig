@@ -38,6 +38,7 @@ pub fn build(b: *std.Build) void {
         libssl_path: ?std.Build.LazyPath = null,
         libcrypto_compile: ?*std.Build.Step.Compile = null,
         libssl_compile: ?*std.Build.Step.Compile = null,
+        shim_compile: ?*std.Build.Step.Compile = null,
         include_path: std.Build.LazyPath,
     };
 
@@ -47,10 +48,46 @@ pub fn build(b: *std.Build) void {
                 std.debug.panic("-Dsanitize-c={t} requires -Dboringssl-source=zig; prebuilt cmake archives cannot be instrumented", .{sanitize_c.?});
             }
             const vendor_dir = b.fmt("vendor/boringssl-prebuilt/{s}", .{boringssl_target});
+            const include_path = b.path(b.fmt("{s}/include", .{vendor_dir}));
+
+            // scripts/build-boringssl.sh builds only BoringSSL's own `crypto`
+            // and `ssl` CMake targets, so src/ssl_shim.cc — which the zig path
+            // folds into libssl — has no home on this path. Compile it into a
+            // sidecar archive against the vendored headers; it only needs the
+            // bssl:: C++ entry points already exported by the prebuilt libssl.
+            const shim_mod = b.createModule(.{
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+                .link_libcpp = true,
+            });
+            shim_mod.addIncludePath(include_path);
+            shim_mod.addCMacro("BORINGSSL_PREFIX", prefix);
+            shim_mod.addCSourceFile(.{
+                .file = b.path("src/ssl_shim.cc"),
+                // Mirror build_boringssl.zig's cxx_flags so the shim has
+                // identical codegen/visibility on both paths.
+                .flags = &.{
+                    "-std=c++17",
+                    "-fno-strict-aliasing",
+                    "-fno-common",
+                    "-fno-exceptions",
+                    "-fno-rtti",
+                    "-fvisibility=hidden",
+                    "-Wno-everything",
+                },
+                .language = .cpp,
+            });
+
             break :blk .{
                 .libcrypto_path = b.path(b.fmt("{s}/lib/libcrypto.a", .{vendor_dir})),
                 .libssl_path = b.path(b.fmt("{s}/lib/libssl.a", .{vendor_dir})),
-                .include_path = b.path(b.fmt("{s}/include", .{vendor_dir})),
+                .shim_compile = b.addLibrary(.{
+                    .linkage = .static,
+                    .name = "ssl_shim",
+                    .root_module = shim_mod,
+                }),
+                .include_path = include_path,
             };
         },
         .zig => blk: {
@@ -99,6 +136,7 @@ pub fn build(b: *std.Build) void {
         boringssl_mod.linkSystemLibrary("ws2_32", .{});
     }
 
+    if (libs.shim_compile) |c| boringssl_mod.linkLibrary(c);
     if (libs.libssl_compile) |c| boringssl_mod.linkLibrary(c);
     if (libs.libcrypto_compile) |c| boringssl_mod.linkLibrary(c);
     if (libs.libssl_path) |p| boringssl_mod.addObjectFile(p);
