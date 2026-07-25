@@ -17,6 +17,25 @@ pub const Result = struct {
     include_path: LazyPath,
 };
 
+// Per-language flags. We deliberately do NOT pass BoringSSL's full
+// upstream warning set (-Werror, -Wshadow, ...): zig cc is built on a
+// newer Clang and surfaces warnings BoringSSL hasn't yet quieted on its
+// tip-of-tree commit. Treating warnings as errors would couple our build
+// to BoringSSL's exact tested clang version. The library code itself is
+// unchanged.
+//
+// File-scope so `build` and `buildShim` cannot drift apart on codegen or
+// symbol visibility.
+const cxx_flags = [_][]const u8{
+    "-std=c++17",
+    "-fno-strict-aliasing",
+    "-fno-common",
+    "-fno-exceptions",
+    "-fno-rtti",
+    "-fvisibility=hidden",
+    "-Wno-everything",
+};
+
 pub const Options = struct {
     target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
@@ -42,21 +61,6 @@ pub fn build(b: *Build, options: Options) Result {
     const include_path = sourcePath(b, options.src, "include");
     const is_windows = options.target.result.os.tag == .windows;
 
-    // Per-language flags. We deliberately do NOT pass BoringSSL's full
-    // upstream warning set (-Werror, -Wshadow, ...): zig cc is built on a
-    // newer Clang and surfaces warnings BoringSSL hasn't yet quieted on its
-    // tip-of-tree commit. Treating warnings as errors would couple our build
-    // to BoringSSL's exact tested clang version. The library code itself is
-    // unchanged.
-    const cxx_flags = [_][]const u8{
-        "-std=c++17",
-        "-fno-strict-aliasing",
-        "-fno-common",
-        "-fno-exceptions",
-        "-fno-rtti",
-        "-fvisibility=hidden",
-        "-Wno-everything",
-    };
     const asm_flags = [_][]const u8{};
 
     const libcrypto_mod = b.createModule(.{
@@ -79,8 +83,8 @@ pub fn build(b: *Build, options: Options) Result {
         .root_module = libcrypto_mod,
     });
 
-    addSection(b, libcrypto_mod, sources, "crypto", options.src, &cxx_flags, &asm_flags);
-    addSection(b, libcrypto_mod, sources, "bcm", options.src, &cxx_flags, &asm_flags);
+    addSection(b, libcrypto_mod, sources, "crypto", options.src, &asm_flags);
+    addSection(b, libcrypto_mod, sources, "bcm", options.src, &asm_flags);
 
     const libssl_mod = b.createModule(.{
         .target = options.target,
@@ -102,12 +106,7 @@ pub fn build(b: *Build, options: Options) Result {
         .root_module = libssl_mod,
     });
 
-    addSection(b, libssl_mod, sources, "ssl", options.src, &cxx_flags, &asm_flags);
-    libssl_mod.addCSourceFile(.{
-        .file = b.path("src/ssl_shim.cc"),
-        .flags = &cxx_flags,
-        .language = .cpp,
-    });
+    addSection(b, libssl_mod, sources, "ssl", options.src, &asm_flags);
     libssl_mod.linkLibrary(libcrypto);
 
     return .{
@@ -115,6 +114,54 @@ pub fn build(b: *Build, options: Options) Result {
         .libssl = libssl,
         .include_path = include_path,
     };
+}
+
+pub const ShimOptions = struct {
+    target: Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    sanitize_c: ?std.zig.SanitizeC = null,
+    boringssl_prefix: []const u8 = "zbssl",
+    /// BoringSSL headers to compile against: this module's `Result.include_path`
+    /// on the native path, or the vendored prebuilt include dir on the CMake
+    /// path. The two are semantically identical.
+    include_path: LazyPath,
+};
+
+/// Build `src/ssl_shim.cc` — the wrapper's `extern "C"` thunks over BoringSSL
+/// entry points that only exist in the `bssl::` C++ namespace, and so cannot be
+/// reached from translate-c.
+///
+/// This is wrapper glue, not part of BoringSSL, so it deliberately lives
+/// outside `build`'s libssl: the CMake path links prebuilt archives that this
+/// module never produces, and folding the shim into libssl left that path with
+/// no copy at all (undefined `boringssl_zig_*` at link time). Keeping exactly
+/// one builder for it means the native and CMake paths cannot diverge on which
+/// glue gets compiled.
+pub fn buildShim(b: *Build, options: ShimOptions) *Compile {
+    const shim_mod = b.createModule(.{
+        .target = options.target,
+        .optimize = options.optimize,
+        .sanitize_c = options.sanitize_c,
+        .link_libc = true,
+        .link_libcpp = true,
+    });
+    shim_mod.addIncludePath(options.include_path);
+    shim_mod.addCMacro("BORINGSSL_PREFIX", options.boringssl_prefix);
+    // Note: no BORINGSSL_IMPLEMENTATION. The shim consumes BoringSSL's public
+    // headers rather than building them; for the static linkage we ship,
+    // OPENSSL_EXPORT expands to nothing either way.
+    addWindowsHeaderMacros(shim_mod);
+    shim_mod.addCSourceFile(.{
+        .file = b.path("src/ssl_shim.cc"),
+        .flags = &cxx_flags,
+        .language = .cpp,
+    });
+
+    return b.addLibrary(.{
+        .linkage = .static,
+        .name = "ssl_shim",
+        .root_module = shim_mod,
+    });
 }
 
 fn addWindowsHeaderMacros(mod: *Module) void {
@@ -171,7 +218,6 @@ fn addSection(
     sources: std.json.Value,
     key: []const u8,
     src: Options.Src,
-    cxx_flags: []const []const u8,
     asm_flags: []const []const u8,
 ) void {
     _ = asm_flags;
@@ -187,7 +233,7 @@ fn addSection(
             if (!std.mem.endsWith(u8, rel, ".cc")) continue;
             mod.addCSourceFile(.{
                 .file = sourcePath(b, src, rel),
-                .flags = cxx_flags,
+                .flags = &cxx_flags,
                 .language = .cpp,
             });
         }
