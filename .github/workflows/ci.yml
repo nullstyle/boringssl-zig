@@ -70,6 +70,11 @@ jobs:
           - x86_64-macos
           - aarch64-linux-musl
           - x86_64-linux-musl
+          # Windows packaging is not release-blocking, but the target must
+          # keep compiling for consumers — this catches Windows-only type
+          # breakage (e.g. the `SOCKET`-vs-`int` socket handle) that no
+          # POSIX target can see.
+          - x86_64-windows-gnu
     steps:
       - uses: actions/checkout@v7
         with:

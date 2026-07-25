@@ -337,11 +337,24 @@ pub const Context = struct {
         }
     }
 
+    /// BoringSSL's `SSL_set_fd` takes a C `int` on every platform, and on
+    /// Windows hands that `int` straight back to `recv`/`send` as a `SOCKET`
+    /// (see BoringSSL's `crypto/bio/socket.cc`). Windows guarantees socket
+    /// handles fit in 32 bits precisely so this round-trip works, so
+    /// narrowing the handle here is the supported conversion rather than a
+    /// lossy cast.
+    fn socketToFd(socket: std.posix.socket_t) c_int {
+        return switch (@typeInfo(std.posix.socket_t)) {
+            .pointer => @intCast(@intFromPtr(socket)),
+            else => socket,
+        };
+    }
+
     pub const ConnOptions = struct {
         /// Hostname for SNI and certificate verification.
         hostname: [:0]const u8,
-        /// Connected socket fd. Conn does not own the fd.
-        fd: c_int,
+        /// Connected socket. Conn does not own the socket.
+        fd: std.posix.socket_t,
     };
 
     pub fn newClient(self: Context, options: ConnOptions) Error!Conn {
@@ -357,7 +370,7 @@ pub const Context = struct {
         const param = c.zbssl_SSL_get0_param(ssl);
         _ = c.zbssl_X509_VERIFY_PARAM_set1_host(param, options.hostname.ptr, options.hostname.len);
 
-        if (c.zbssl_SSL_set_fd(ssl, options.fd) != 1) {
+        if (c.zbssl_SSL_set_fd(ssl, socketToFd(options.fd)) != 1) {
             return Error.SslSetFdFailed;
         }
 
@@ -365,8 +378,8 @@ pub const Context = struct {
     }
 
     pub const ServerConnOptions = struct {
-        /// Connected socket fd. Conn does not own the fd.
-        fd: c_int,
+        /// Connected socket. Conn does not own the socket.
+        fd: std.posix.socket_t,
     };
 
     pub fn newServer(self: Context, options: ServerConnOptions) Error!Conn {
@@ -376,7 +389,7 @@ pub const Context = struct {
 
         c.zbssl_SSL_set_accept_state(ssl);
 
-        if (c.zbssl_SSL_set_fd(ssl, options.fd) != 1) {
+        if (c.zbssl_SSL_set_fd(ssl, socketToFd(options.fd)) != 1) {
             return Error.SslSetFdFailed;
         }
 

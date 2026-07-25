@@ -213,6 +213,7 @@ zig build test  -Dtarget=aarch64-macos          # native arm64 mac
 zig build test  -Dtarget=x86_64-macos           # via Rosetta
 zig build       -Dtarget=aarch64-linux-musl     # link only (no qemu)
 zig build       -Dtarget=x86_64-linux-musl
+zig build       -Dtarget=x86_64-windows-gnu     # link only (OPENSSL_NO_ASM)
 ```
 
 The Linux cross builds produce statically-linked ELF binaries; running
@@ -342,7 +343,8 @@ native zig path don't need it.
 - **native test** on `ubuntu-latest`: `zig build test`, `zig build run-smoke`,
   and the consumer integration test.
 - **cross**: matrix over `aarch64-macos`, `x86_64-macos`, `aarch64-linux-musl`,
-  `x86_64-linux-musl` — link-only check via `zig build -Dtarget=...`.
+  `x86_64-linux-musl`, `x86_64-windows-gnu` — link-only check via
+  `zig build -Dtarget=...`.
 
 [`.github/workflows/cmake-parity.yml`](.github/workflows/cmake-parity.yml) runs
 `just verify-paths` — the CMake prebuilt path cross-checked against the native
