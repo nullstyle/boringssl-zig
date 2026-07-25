@@ -40,9 +40,15 @@ boringssl-cmake target="native": check-cmake-tools deps
 verify-cmake target="native":
     scripts/verify-prebuilt.sh {{target}}
 
+# Assert build.zig.zon and the deps/boringssl submodule pin the same
+# BoringSSL commit — otherwise verify-paths compares two different
+# libraries and a pass means nothing.
+check-pins:
+    scripts/check-boringssl-pins.sh
+
 # Verify the CMake-built archive and the zig-built archive produce the
 # same KAT pass rate. Both paths must succeed.
-verify-paths: boringssl-cmake
+verify-paths: check-pins boringssl-cmake
     zig build test -Dboringssl-source=cmake
     zig build test -Dboringssl-source=zig
 

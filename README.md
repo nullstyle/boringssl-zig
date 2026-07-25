@@ -245,6 +245,9 @@ build_boringssl.zig     reads gen/sources.json, emits libcrypto/libssl
 scripts/
   build-boringssl.sh    CMake driver (verification-only path)
   verify-prebuilt.sh    sha256 verification of CMake artifacts
+  check-boringssl-pins.sh
+                        asserts build.zig.zon and the deps/boringssl
+                        submodule pin the same BoringSSL commit
 deps/boringssl/         pinned submodule (CMake verification path only)
 vendor/boringssl-prebuilt/<target>/
                         CMake outputs (only populated by `just boringssl-cmake`)
@@ -341,6 +344,19 @@ native zig path don't need it.
 - **cross**: matrix over `aarch64-macos`, `x86_64-macos`, `aarch64-linux-musl`,
   `x86_64-linux-musl` — link-only check via `zig build -Dtarget=...`.
 
+[`.github/workflows/cmake-parity.yml`](.github/workflows/cmake-parity.yml) runs
+`just verify-paths` — the CMake prebuilt path cross-checked against the native
+zig path — but deliberately stays off the fast consumer path above. It is a
+separate workflow rather than a job in `ci.yml` because a `paths:` filter there
+would apply to every job in the file, and cmake/ninja/go have no business on the
+critical path. It triggers nightly, on `workflow_dispatch`, and on PRs touching
+the files where the two paths can drift (`build.zig`, `build_boringssl.zig`,
+`src/ssl_shim.cc`, `scripts/build-boringssl.sh`, the BoringSSL pins, ...).
+
+Its first step is `scripts/check-boringssl-pins.sh`, which asserts
+`build.zig.zon` and the `deps/boringssl` submodule name the same commit — parity
+between two *different* BoringSSL versions would be a meaningless green.
+
 The workflow is validated locally with [act](https://github.com/nektos/act):
 
 ```sh
@@ -353,11 +369,12 @@ On Apple Silicon, `act` uses the arm64 variant of `catthehacker/ubuntu:act-lates
 
 ## What's next
 
-- **CMake parity remains advisory.** The native Zig path is the supported
-  package-consumer path and is what CI gates today. The CMake comparison is
-  still useful as a local cross-check for upstream BoringSSL source-list drift,
-  but it is not release-blocking unless it can be added without destabilizing
-  the fast consumer CI path.
+- **CMake parity is now checked, and still advisory.** The native Zig path
+  remains the supported package-consumer path and is what gates every PR. The
+  CMake comparison runs in its own nightly/dispatch/path-gated workflow (see
+  [CI](#ci)), so it catches upstream BoringSSL source-list drift without
+  sitting on the fast consumer path. A red parity run is a signal to
+  investigate, not an automatic release blocker.
 
 Out of scope deliberately: FIPS mode and BoringSSL's full upstream test
 suite. Windows native builds use BoringSSL's `OPENSSL_NO_ASM` fallback and

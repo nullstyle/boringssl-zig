@@ -1,0 +1,82 @@
+name: CMake parity
+
+# Advisory cross-check of the CMake prebuilt path against the native zig path.
+#
+# README's "What's next" keeps CMake parity advisory: the native zig path is
+# what package consumers use and what ci.yml gates on every PR. So this lives
+# in its own workflow rather than as a job in ci.yml — a `paths:` filter there
+# would apply to every job in the file, and the cmake/ninja/go toolchain has no
+# business on the fast consumer CI path.
+#
+# It still runs on PRs that touch the files where the two paths can actually
+# drift apart, because that is where the regression this guards against came
+# from: 8c47b6e added src/ssl_shim.cc to the zig path only, and prebuilt
+# archives failed to link for eight releases without CI noticing.
+on:
+  schedule:
+    # 07:00 UTC daily. Catches upstream BoringSSL source-list drift.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - build.zig
+      - build_boringssl.zig
+      - build.zig.zon
+      - src/ssl_shim.cc
+      - src/c_imports.h
+      - scripts/build-boringssl.sh
+      - scripts/verify-prebuilt.sh
+      - scripts/check-boringssl-pins.sh
+      - justfile
+      - mise.toml
+      - .gitmodules
+      # The gitlink itself: a submodule bump changes this path, not .gitmodules.
+      - deps/boringssl
+      - .github/workflows/cmake-parity.yml
+
+# A nightly and a push-triggered run doing the same several-minute BoringSSL
+# build gain nothing by overlapping.
+concurrency:
+  group: cmake-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  parity:
+    name: verify-paths (cmake vs zig)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      # Cheapest check first: if the two BoringSSL pins disagree, the parity
+      # comparison is meaningless and the ~2 min build below is wasted. Reads
+      # the gitlink from the tree, so it needs no submodule checkout.
+      - name: Assert BoringSSL pins agree
+        run: scripts/check-boringssl-pins.sh
+
+      # Not `just deps` — that inits recursively and pulls BoringSSL's own
+      # submodules, which the crypto/ssl CMake targets do not need.
+      - name: Check out BoringSSL submodule
+        run: git submodule update --init --depth 1 deps/boringssl
+
+      - name: Set up mise (zig master + cmake/ninja/go)
+        uses: jdx/mise-action@v4
+        with:
+          install: true
+          cache: true
+
+      - name: Show toolchain
+        run: |
+          zig version
+          cmake --version | head -n 1
+          ninja --version
+          go version
+
+      # Builds BoringSSL via CMake+Ninja, then runs the KAT suite against both
+      # the prebuilt archives and the native zig build.
+      - name: just verify-paths
+        run: just verify-paths
+
+      - name: Verify prebuilt archives match their manifest
+        run: just verify-cmake native
