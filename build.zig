@@ -5,6 +5,95 @@ const prefix = "zbssl";
 
 const Source = enum { zig, cmake };
 
+/// Entries every prebuilt BoringSSL directory holds, relative to its root.
+const prebuilt_entries = [_][]const u8{ "lib/libcrypto.a", "lib/libssl.a", "include" };
+
+/// A directory of CMake-built BoringSSL artifacts, resolved either through
+/// this package's `vendor/` convention or from an embedder-supplied path.
+const PrebuiltDir = union(enum) {
+    /// Relative to this package's root: `vendor/boringssl-prebuilt/<target>`,
+    /// populated by `just boringssl-cmake`. Only a checkout has it — the
+    /// `.paths` whitelist in build.zig.zon omits `vendor/`, so a fetched copy
+    /// of this package never carries prebuilt archives.
+    package: []const u8,
+    /// Absolute path from `-Dboringssl-prebuilt-path`, outside the package.
+    external: []const u8,
+
+    fn lazyPath(dir: PrebuiltDir, b: *std.Build, sub: []const u8) std.Build.LazyPath {
+        return switch (dir) {
+            .package => |rel| b.path(b.pathJoin(&.{ rel, sub })),
+            .external => |abs| .{ .cwd_relative = b.pathJoin(&.{ abs, sub }) },
+        };
+    }
+
+    /// Absolute path to `sub`, for configure-time probing and diagnostics.
+    fn absPath(dir: PrebuiltDir, b: *std.Build, sub: []const u8) []const u8 {
+        return switch (dir) {
+            .package => |rel| b.root.joinString(
+                b.allocator,
+                b.pathJoin(&.{ rel, sub }),
+            ) catch @panic("OOM"),
+            .external => |abs| b.pathJoin(&.{ abs, sub }),
+        };
+    }
+
+    fn isPopulated(dir: PrebuiltDir, b: *std.Build) bool {
+        for (prebuilt_entries) |entry| {
+            std.Io.Dir.cwd().access(b.graph.io, dir.absPath(b, entry), .{}) catch return false;
+        }
+        return true;
+    }
+};
+
+/// Locate the prebuilt archives for `-Dboringssl-source=cmake`. An explicit
+/// `-Dboringssl-prebuilt-path` wins over the `vendor/` convention; either the
+/// directory itself or a `<dir>/<boringssl-target>` subdirectory may hold the
+/// artifacts, so both a single-target package and a vendor-shaped tree work.
+fn resolvePrebuiltDir(b: *std.Build, prebuilt_path: ?[]const u8, boringssl_target: []const u8) PrebuiltDir {
+    if (prebuilt_path) |supplied| {
+        if (!std.fs.path.isAbsolute(supplied)) {
+            std.debug.panic(
+                \\-Dboringssl-prebuilt-path must be absolute (got '{s}').
+                \\It is resolved against the build runner's working directory, which is
+                \\not the package root when boringssl-zig is built as a dependency.
+            , .{supplied});
+        }
+
+        const direct: PrebuiltDir = .{ .external = supplied };
+        if (direct.isPopulated(b)) return direct;
+
+        const per_target: PrebuiltDir = .{ .external = b.pathJoin(&.{ supplied, boringssl_target }) };
+        if (per_target.isPopulated(b)) return per_target;
+
+        std.debug.panic(
+            \\-Dboringssl-prebuilt-path='{s}' holds no BoringSSL prebuilt.
+            \\  probed: {s}
+            \\  probed: {s}
+            \\A prebuilt directory holds lib/libcrypto.a, lib/libssl.a and include/.
+            \\Produce one from a boringssl-zig checkout: scripts/build-boringssl.sh {s}
+        , .{
+            supplied,
+            direct.absPath(b, "lib/libcrypto.a"),
+            per_target.absPath(b, "lib/libcrypto.a"),
+            boringssl_target,
+        });
+    }
+
+    const vendor: PrebuiltDir = .{ .package = b.fmt("vendor/boringssl-prebuilt/{s}", .{boringssl_target}) };
+    if (vendor.isPopulated(b)) return vendor;
+
+    std.debug.panic(
+        \\-Dboringssl-source=cmake found no BoringSSL prebuilt for target '{s}'.
+        \\  probed: {s}
+        \\In a boringssl-zig checkout, populate that directory with:
+        \\  just boringssl-cmake {s}
+        \\A fetched copy of this package has no vendor/ directory at all (build.zig.zon
+        \\.paths omits it), so point at the archives explicitly:
+        \\  -Dboringssl-prebuilt-path=/abs/dir   with dir/lib/lib{{crypto,ssl}}.a + dir/include
+        \\Otherwise drop -Dboringssl-source=cmake and let Zig build BoringSSL from source.
+    , .{ boringssl_target, vendor.absPath(b, "lib/libcrypto.a"), boringssl_target });
+}
+
 fn parseSanitizeC(value: []const u8) std.zig.SanitizeC {
     if (std.mem.eql(u8, value, "off")) return .off;
     if (std.mem.eql(u8, value, "trap")) return .trap;
@@ -21,17 +110,35 @@ pub fn build(b: *std.Build) void {
         "Override C/UB sanitizer mode for BoringSSL and wrapper modules: off, trap, or full",
     )) |mode| parseSanitizeC(mode) else null;
 
-    const source = b.option(
+    const requested_source = b.option(
         Source,
         "boringssl-source",
-        "How to build BoringSSL: 'zig' (native build.zig) or 'cmake' (vendor/ prebuilts).",
-    ) orelse .zig;
+        "How to build BoringSSL: 'zig' (native build.zig) or 'cmake' (prebuilt archives).",
+    );
 
     const boringssl_target = b.option(
         []const u8,
         "boringssl-target",
-        "When --boringssl-source=cmake, picks vendor/boringssl-prebuilt/<dir>/ (default: native).",
+        "When --boringssl-source=cmake, names the prebuilt directory: vendor/boringssl-prebuilt/<dir>/, " ++
+            "or <dir> under --boringssl-prebuilt-path (default: native).",
     ) orelse "native";
+
+    const prebuilt_path = b.option(
+        []const u8,
+        "boringssl-prebuilt-path",
+        "Absolute path to prebuilt BoringSSL archives (<dir>/lib/lib{crypto,ssl}.a + <dir>/include). " ++
+            "Implies --boringssl-source=cmake and bypasses vendor/, so it works from a fetched package.",
+    );
+
+    const source: Source = requested_source orelse
+        if (prebuilt_path != null) .cmake else .zig;
+
+    if (source == .zig and prebuilt_path != null) {
+        std.debug.panic(
+            \\-Dboringssl-prebuilt-path is only consumed by -Dboringssl-source=cmake;
+            \\the zig path compiles BoringSSL from source and links no prebuilt archives.
+        , .{});
+    }
 
     const Libs = struct {
         libcrypto_path: ?std.Build.LazyPath = null,
@@ -46,11 +153,11 @@ pub fn build(b: *std.Build) void {
             if (sanitize_c != null and sanitize_c != .off) {
                 std.debug.panic("-Dsanitize-c={t} requires -Dboringssl-source=zig; prebuilt cmake archives cannot be instrumented", .{sanitize_c.?});
             }
-            const vendor_dir = b.fmt("vendor/boringssl-prebuilt/{s}", .{boringssl_target});
+            const prebuilt = resolvePrebuiltDir(b, prebuilt_path, boringssl_target);
             break :blk .{
-                .libcrypto_path = b.path(b.fmt("{s}/lib/libcrypto.a", .{vendor_dir})),
-                .libssl_path = b.path(b.fmt("{s}/lib/libssl.a", .{vendor_dir})),
-                .include_path = b.path(b.fmt("{s}/include", .{vendor_dir})),
+                .libcrypto_path = prebuilt.lazyPath(b, "lib/libcrypto.a"),
+                .libssl_path = prebuilt.lazyPath(b, "lib/libssl.a"),
+                .include_path = prebuilt.lazyPath(b, "include"),
             };
         },
         .zig => blk: {
@@ -71,7 +178,7 @@ pub fn build(b: *std.Build) void {
     };
 
     // C bindings via translate-c. Headers come from BoringSSL's source tree
-    // (zig path) or the vendored prebuilt include dir (cmake path); both are
+    // (zig path) or the prebuilt include dir (cmake path); both are
     // semantically identical since BoringSSL ships pre-generated prefix
     // headers in include/openssl/.
     const translate_c = b.addTranslateC(.{

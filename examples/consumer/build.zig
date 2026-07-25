@@ -11,9 +11,27 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Forwarded straight through, the way a real downstream package (quic-zig)
+    // does, so `just test-consumer-prebuilt` can exercise the prebuilt-linking
+    // options from outside the boringssl-zig package. Unset options stay unset.
     const boringssl_dep = b.dependency("boringssl_zig", .{
         .target = target,
         .optimize = optimize,
+        .@"boringssl-source" = b.option(
+            []const u8,
+            "boringssl-source",
+            "Forwarded to boringssl-zig: 'zig' or 'cmake'",
+        ),
+        .@"boringssl-target" = b.option(
+            []const u8,
+            "boringssl-target",
+            "Forwarded to boringssl-zig: prebuilt directory name",
+        ),
+        .@"boringssl-prebuilt-path" = b.option(
+            []const u8,
+            "boringssl-prebuilt-path",
+            "Forwarded to boringssl-zig: absolute path to prebuilt BoringSSL archives",
+        ),
     });
     const boringssl_mod = boringssl_dep.module("boringssl");
 

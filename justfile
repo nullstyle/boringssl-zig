@@ -47,17 +47,24 @@ check-pins:
     scripts/check-boringssl-pins.sh
 
 # Verify the CMake-built archive and the zig-built archive produce the
-# same KAT pass rate. Both paths must succeed.
+# same KAT pass rate. All three resolutions must succeed.
 verify-paths: check-pins boringssl-cmake
     zig build test -Dboringssl-source=cmake
     zig build test -Dboringssl-source=zig
+    zig build test -Dboringssl-prebuilt-path="{{justfile_directory()}}/vendor/boringssl-prebuilt/native"
 
 # Build the standalone consumer in examples/consumer/ — proves the
 # build.zig.zon package boundary works end-to-end.
 test-consumer:
     cd examples/consumer && zig build test
 
-ci-local: deps test smoke test-consumer verify-paths
+# Same consumer, linking prebuilt archives through an absolute path instead
+# of this package's vendor/ dir — the only prebuilt route a fetched package
+# has, since .paths omits vendor/.
+test-consumer-prebuilt target="native": (boringssl-cmake target)
+    cd examples/consumer && zig build test -Dboringssl-prebuilt-path="{{justfile_directory()}}/vendor/boringssl-prebuilt/{{target}}"
+
+ci-local: deps test smoke test-consumer verify-paths test-consumer-prebuilt
 
 # Run the GitHub Actions workflow locally with act + Docker.
 # `act` picks the container architecture matching the host, so on Apple

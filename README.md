@@ -4,10 +4,12 @@ A Zig wrapper around BoringSSL, intended for publication as a Zig package.
 Builds BoringSSL natively from `build.zig` — consumers need only Zig
 0.16.0; CMake is optional and only used as a verification path.
 
-**Status: 0.6.4 — AES-128/256-ECB single-block decrypt
+**Status: 0.6.5 — AES-128/256-ECB single-block decrypt
 (`Aes128.initDecrypt` / `decryptBlock`) on top of 0.5.0, current
 Zig master compatibility, sanitizer propagation, and less brittle source
-fetching, plus Windows SDK macro hygiene and no-NASM native Windows builds.
+fetching, plus Windows SDK macro hygiene, no-NASM native Windows builds, and
+prebuilt archives linkable from a fetched package via
+`-Dboringssl-prebuilt-path`.
 Drives QUIC-LB draft-21 §5.5.1 single-pass decode in quic-zig.**
 
 | Phase | What | Status |
@@ -69,11 +71,12 @@ copy without ODR collisions.
 ## Choosing a build path
 
 ```sh
-zig build test                                 # native (default)
-zig build test -Dboringssl-source=zig          # explicit native
-zig build test -Dboringssl-source=cmake        # use vendor/ prebuilt
-zig build test -Dsanitize-c=full               # UBSan over BoringSSL C/C++
-just verify-paths                              # both paths must pass KATs
+zig build test                                      # native (default)
+zig build test -Dboringssl-source=zig               # explicit native
+zig build test -Dboringssl-source=cmake             # link vendor/ prebuilt
+zig build test -Dboringssl-prebuilt-path=/abs/dir   # link prebuilt from anywhere
+zig build test -Dsanitize-c=full                    # UBSan over BoringSSL C/C++
+just verify-paths                                   # every path must pass KATs
 ```
 
 The CMake path remains for cross-checking the native build:
@@ -86,6 +89,79 @@ KATs against the CMake build are the comparison oracle.
 native BoringSSL C++ libraries, translate-c bindings, wrapper module, and
 tests. `trap`/`full` require `-Dboringssl-source=zig`; prebuilt CMake
 archives cannot be retroactively instrumented.
+
+### Linking prebuilt archives
+
+A prebuilt directory looks like this — exactly what
+`scripts/build-boringssl.sh <target>` emits:
+
+```
+<dir>/lib/libcrypto.a
+<dir>/lib/libssl.a
+<dir>/include/openssl/...
+```
+
+`-Dboringssl-source=cmake` links one instead of compiling BoringSSL. The
+directory is resolved in this order:
+
+1. `-Dboringssl-prebuilt-path=<dir>`, then `<dir>/<boringssl-target>` if the
+   first holds no archives. The path must be absolute — it is resolved by the
+   build runner, not against a package root. Passing it implies
+   `-Dboringssl-source=cmake`.
+2. `vendor/boringssl-prebuilt/<boringssl-target>/` inside this package, which
+   `just boringssl-cmake <target>` populates.
+
+**`vendor/` only exists in a checkout.** `build.zig.zon`'s `.paths` whitelist
+omits it, so a `zig fetch`-ed copy of this package never carries prebuilt
+archives; consumers of the published package reach this mode only through
+`-Dboringssl-prebuilt-path`. When nothing resolves, the build panics at
+configure time listing the paths it probed, rather than failing later with a
+missing-file link error.
+
+The archives must match `-Dtarget` and must have been built with
+`BORINGSSL_PREFIX=zbssl` — the wrapper calls prefixed symbols.
+
+### Prebuilts from a lazy sub-package
+
+Because the option takes a plain directory, per-target archives can live in
+their own Zig package that a consumer declares lazily: nothing is fetched
+unless that target's prebuilt is actually selected.
+
+```zig
+// consumer build.zig.zon — tarball root holds lib/ and include/
+.dependencies = .{
+    .boringssl_zig = .{ .url = "...", .hash = "..." },
+    .boringssl_prebuilt_aarch64_macos = .{
+        .url = "https://example.com/boringssl-prebuilt-aarch64-macos.tar.gz",
+        .hash = "...",
+        .lazy = true,
+    },
+},
+```
+
+```zig
+// consumer build.zig
+const prebuilt_root: ?[]const u8 =
+    if (b.lazyDependency("boringssl_prebuilt_aarch64_macos", .{})) |prebuilt|
+        prebuilt.builder.root.toString(b.allocator) catch @panic("OOM")
+    else
+        null; // first configure pass; the runner re-runs build() after fetching
+
+const boringssl_dep = b.dependency("boringssl_zig", .{
+    .target = target,
+    .optimize = optimize,
+    .@"boringssl-prebuilt-path" = prebuilt_root,
+});
+```
+
+Let the path imply the mode; don't also pass `-Dboringssl-source=cmake` here.
+On the pre-fetch configure pass `prebuilt_root` is still `null`, and an
+explicit `cmake` with no path to resolve is exactly the case that panics.
+
+[examples/consumer/build.zig](examples/consumer/build.zig) forwards
+`-Dboringssl-source`, `-Dboringssl-target`, and `-Dboringssl-prebuilt-path`
+straight through, the way a downstream package such as quic-zig does.
+`just test-consumer-prebuilt` runs it against archives outside the package.
 
 ## Wrapper API
 
@@ -224,6 +300,8 @@ them from macOS needs `qemu-aarch64` / `qemu-x86_64` (or use `-fqemu`).
 ```
 src/                    library code only (shipped to consumers)
   c_imports.h
+  ssl_shim.cc           C++ shim over BoringSSL's bssl:: test hooks; built as
+                        a static ssl_shim lib and linked in on both paths
   root.zig              public API: crypto.{hash,hmac,rand,aead,kdf,aes,chacha20}, tls, errors, raw
   crypto/{hash,hmac,rand,aead,kdf,aes,chacha20}.zig
   tls.zig               TLS 1.3 client + server (fd-based + fd-less for QUIC), Session, callbacks
@@ -258,7 +336,9 @@ zig-pkg/                local Zig package cache (gitignored)
 The `build.zig.zon` `.paths` whitelist deliberately omits `cli/`,
 `examples/`, `tests/`, `deps/`, `vendor/`, and `scripts/` — so when a
 downstream consumer fetches this package, they only get the library
-sources plus the build scripts they need to compile BoringSSL.
+sources plus the build scripts they need to compile BoringSSL. Fetched
+copies therefore have no `vendor/` prebuilts; see
+[Linking prebuilt archives](#linking-prebuilt-archives).
 
 ## Tooling
 
