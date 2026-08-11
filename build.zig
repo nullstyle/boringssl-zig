@@ -203,7 +203,10 @@ pub fn build(b: *std.Build) void {
     });
     boringssl_mod.addImport("c", c_mod);
     if (target.result.os.tag == .windows) {
-        boringssl_mod.linkSystemLibrary("ws2_32", .{});
+        // ws2_32 is supplied by the Windows SDK. Never consult pkg-config for
+        // it: Git Bash can expose a pkg-config.BAT shim which cannot describe
+        // SDK libraries and makes an otherwise native Windows build fail.
+        boringssl_mod.linkSystemLibrary("ws2_32", .{ .use_pkg_config = .no });
     }
 
     // Wrapper glue over BoringSSL's bssl::-namespaced entry points. Built the
