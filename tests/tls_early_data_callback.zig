@@ -139,6 +139,8 @@ fn driveOneStep(ep: *Endpoint) !void {
 const HandshakeResult = struct {
     client_status: tls.Conn.EarlyDataStatus,
     server_status: tls.Conn.EarlyDataStatus,
+    client_random_client: [32]u8,
+    client_random_server: [32]u8,
 };
 
 fn runHandshake(
@@ -187,6 +189,8 @@ fn runHandshake(
     return .{
         .client_status = ep_c.conn.earlyDataStatus(),
         .server_status = ep_s.conn.earlyDataStatus(),
+        .client_random_client = try ep_c.conn.getClientRandom(),
+        .client_random_server = try ep_s.conn.getClientRandom(),
     };
 }
 
@@ -195,6 +199,8 @@ const CallbackProbe = struct {
     decision: bool = true,
     last_session_id_len: usize = 0,
     last_session_id_bytes: [32]u8 = @splat(0),
+    client_random_seen: bool = false,
+    client_random: [32]u8 = @splat(0),
 };
 
 fn allowCallback(user_data: ?*anyopaque, conn: *tls.Conn) bool {
@@ -206,6 +212,15 @@ fn allowCallback(user_data: ?*anyopaque, conn: *tls.Conn) bool {
         probe.last_session_id_len = id.len;
     } else {
         probe.last_session_id_len = 0;
+    }
+    // BoringSSL runs this hook before copying the ClientHello
+    // random into SSL3 state, so `getClientRandom` must read the
+    // parsed ClientHello (via the threadlocal stash) here.
+    if (conn.getClientRandom()) |cr| {
+        probe.client_random = cr;
+        probe.client_random_seen = true;
+    } else |_| {
+        probe.client_random_seen = false;
     }
     return probe.decision;
 }
@@ -260,19 +275,28 @@ test "AllowEarlyDataCallback fires on every ClientHello (cold + resumed)" {
     defer client_ctx.deinit();
 
     // Cold handshake: callback should fire once, peerSessionId
-    // should be null (no resumed session attached).
+    // should be null (no resumed session attached), and the
+    // ClientHello random read inside the callback must match what
+    // both endpoints report after the handshake.
+    var cold_random: [32]u8 = undefined;
     {
         const status = try runHandshake(client_ctx, server_ctx, null);
         try std.testing.expectEqual(@as(u32, 1), probe.invocations);
         try std.testing.expectEqual(@as(usize, 0), probe.last_session_id_len);
         try std.testing.expectEqual(tls.Conn.EarlyDataStatus.not_offered, status.client_status);
+        try std.testing.expect(probe.client_random_seen);
+        try std.testing.expectEqualSlices(u8, &probe.client_random, &status.client_random_client);
+        try std.testing.expectEqualSlices(u8, &probe.client_random, &status.client_random_server);
+        cold_random = probe.client_random;
     }
     try std.testing.expect(captured_session != null);
 
     // Resumed handshake: callback fires again, this time
     // peerSessionId should be a non-empty slice from the resumed
     // session, and (because the probe defaults to "allow") 0-RTT
-    // should be accepted on both sides.
+    // should be accepted on both sides. The ClientHello random is
+    // fresh per attempt, so the callback-seen value must again
+    // match both endpoints and differ from the cold handshake's.
     {
         var session = try tls.Session.fromBytes(client_ctx, captured_session.?);
         defer session.deinit();
@@ -282,6 +306,10 @@ test "AllowEarlyDataCallback fires on every ClientHello (cold + resumed)" {
         try std.testing.expect(probe.last_session_id_len > 0);
         try std.testing.expectEqual(tls.Conn.EarlyDataStatus.accepted, status.client_status);
         try std.testing.expectEqual(tls.Conn.EarlyDataStatus.accepted, status.server_status);
+        try std.testing.expect(probe.client_random_seen);
+        try std.testing.expectEqualSlices(u8, &probe.client_random, &status.client_random_client);
+        try std.testing.expectEqualSlices(u8, &probe.client_random, &status.client_random_server);
+        try std.testing.expect(!std.mem.eql(u8, &cold_random, &probe.client_random));
     }
 }
 

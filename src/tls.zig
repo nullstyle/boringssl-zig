@@ -695,20 +695,38 @@ pub const Conn = struct {
 
     /// RFC 8446 client_random from the ClientHello (32 bytes). The
     /// same value is visible on both endpoints once the ClientHello
-    /// has been processed: on the client, after `handshake()` has
-    /// generated the first flight; on the server, as soon as the
-    /// ClientHello has been parsed — in particular inside an
-    /// `AllowEarlyDataCallback`, which BoringSSL only fires after
-    /// consuming the ClientHello.
+    /// exists: on the client, after `handshake()` has generated the
+    /// first flight; on the server, once the ClientHello has been
+    /// parsed. Inside an `AllowEarlyDataCallback` the server reads
+    /// the parsed ClientHello directly, because BoringSSL invokes
+    /// that hook *before* it copies the random into SSL3 state (see
+    /// below).
     ///
-    /// Mirrors BoringSSL's `SSL_get_client_random`. BoringSSL's
-    /// contract is to write exactly the number of bytes requested
-    /// (up to 32), so with a 32-byte destination this always
-    /// succeeds; `Error.ClientRandomUnavailable` is returned
-    /// defensively if a future BoringSSL repin ever reports fewer
-    /// bytes, so the wrapper fails loudly instead of handing back a
-    /// silently zero-padded value.
+    /// Mirrors BoringSSL's `SSL_get_client_random`, with one
+    /// correction: BoringSSL runs the select-certificate hook
+    /// (`AllowEarlyDataCallback`'s underlying mechanism) ahead of
+    /// the `ssl->s3->client_random` memcpy in
+    /// `handshake_server.cc`, so calling `SSL_get_client_random`
+    /// from inside the callback would return the zero-initialized
+    /// placeholder. While the callback is on the stack (tracked via
+    /// the same threadlocal `current_client_hello` mechanism as
+    /// `peerSessionId`), this method reads `hello.random` out of the
+    /// parsed ClientHello instead.
+    ///
+    /// `Error.ClientRandomUnavailable` is returned defensively if
+    /// fewer than 32 bytes are available — a BoringSSL repin
+    /// changing the semantics would surface here instead of silently
+    /// returning zero-padded bytes.
     pub fn getClientRandom(self: *const Conn) Error![32]u8 {
+        if (current_client_hello) |hello| {
+            if (hello.*.ssl == self.inner) {
+                if (hello.*.random_len != 32) return Error.ClientRandomUnavailable;
+                var out: [32]u8 = undefined;
+                @memcpy(&out, hello.*.random[0..32]);
+                return out;
+            }
+        }
+
         var out: [32]u8 = undefined;
         const n = c.zbssl_SSL_get_client_random(self.inner, &out, out.len);
         if (n != out.len) return Error.ClientRandomUnavailable;
