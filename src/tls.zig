@@ -50,6 +50,7 @@ pub const Error = error{
     KeylogSetupFailed,
     AllowEarlyDataCallbackInstallFailed,
     EarlyDataRejected,
+    ClientRandomUnavailable,
 };
 
 pub const Mode = enum { client, server };
@@ -690,6 +691,28 @@ pub const Conn = struct {
         const ptr = c.zbssl_SSL_SESSION_get_id(session, &len);
         if (len == 0 or ptr == null) return null;
         return ptr[0..@intCast(len)];
+    }
+
+    /// RFC 8446 client_random from the ClientHello (32 bytes). The
+    /// same value is visible on both endpoints once the ClientHello
+    /// has been processed: on the client, after `handshake()` has
+    /// generated the first flight; on the server, as soon as the
+    /// ClientHello has been parsed — in particular inside an
+    /// `AllowEarlyDataCallback`, which BoringSSL only fires after
+    /// consuming the ClientHello.
+    ///
+    /// Mirrors BoringSSL's `SSL_get_client_random`. BoringSSL's
+    /// contract is to write exactly the number of bytes requested
+    /// (up to 32), so with a 32-byte destination this always
+    /// succeeds; `Error.ClientRandomUnavailable` is returned
+    /// defensively if a future BoringSSL repin ever reports fewer
+    /// bytes, so the wrapper fails loudly instead of handing back a
+    /// silently zero-padded value.
+    pub fn getClientRandom(self: *const Conn) Error![32]u8 {
+        var out: [32]u8 = undefined;
+        const n = c.zbssl_SSL_get_client_random(self.inner, &out, out.len);
+        if (n != out.len) return Error.ClientRandomUnavailable;
+        return out;
     }
 };
 

@@ -1,4 +1,4 @@
-//! boringssl-zig: a Zig wrapper around BoringSSL.
+//! boringssl: a Zig wrapper around BoringSSL.
 //!
 //! The high-level `crypto` namespace is the supported public surface.
 //! `raw` exposes the translate-c output for advanced users; symbol names

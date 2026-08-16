@@ -1,4 +1,4 @@
-//! Tiny consumer of boringssl-zig — proves the package boundary works:
+//! Tiny consumer of the boringssl package — proves the package boundary works:
 //! we import "boringssl" via build.zig.zon and call into the wrapper
 //! and the underlying BoringSSL crypto.
 

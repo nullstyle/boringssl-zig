@@ -1,10 +1,10 @@
 .{
-    .name = .boringssl_zig_consumer,
+    .name = .boringssl_consumer,
     .version = "0.0.0",
-    .fingerprint = 0xf1d6061cb85d2f23,
+    .fingerprint = 0x2f722ffd6ba5f855,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .boringssl_zig = .{
+        .boringssl = .{
             .path = "../..",
         },
     },

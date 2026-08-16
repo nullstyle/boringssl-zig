@@ -1,8 +1,11 @@
-# boringssl-zig
+# boringssl
 
-A Zig wrapper around BoringSSL, intended for publication as a Zig package.
-Builds BoringSSL natively from `build.zig` — consumers need only Zig
-0.16.0; CMake is optional and only used as a verification path.
+A Zig wrapper around BoringSSL, published as the `boringssl` Zig package
+(repo: `nullstyle/boringssl-zig`). The package name and the module name are
+the same: consumers declare `.boringssl = .{...}` in their build.zig.zon and
+`@import("boringssl")` in code. Builds BoringSSL natively from `build.zig` —
+consumers need only Zig 0.16.0; CMake is optional and only used as a
+verification path.
 
 **Status: 0.6.5 — AES-128/256-ECB single-block decrypt
 (`Aes128.initDecrypt` / `decryptBlock`) on top of 0.5.0, current
@@ -10,6 +13,10 @@ Zig master compatibility, sanitizer propagation, and less brittle source
 fetching, plus Windows SDK macro hygiene, no-NASM native Windows builds, and
 prebuilt archives linkable from a fetched package via
 `-Dboringssl-prebuilt-path`.
+Republished under the package identity `boringssl` (dependency key, package
+name, and `@import("boringssl")` module name now align), with
+`tls.Conn.getClientRandom` binding `SSL_get_client_random` for 0-RTT
+anti-replay identities of the form SHA256(ticket || client_random).
 Drives QUIC-LB draft-21 §5.5.1 single-pass decode in quic-zig.**
 
 | Phase | What | Status |
@@ -33,7 +40,7 @@ via Rosetta. Linux cross builds link cleanly (qemu not used).
 ```sh
 mise install            # zig 0.16.0 (and go for the optional cmake path)
 just deps               # init the BoringSSL submodule
-just test               # 22 tests: SHA-2 KATs, HMAC RFC 4231, RAND, errors, etc.
+just test               # 66 tests: SHA-2/HMAC KATs, RAND, TLS handshake, QUIC bridge, 0-RTT, keylog, etc.
 just smoke              # SHA-256 + 16 random bytes
 just tls-smoke          # HTTPS round-trip to example.com:443 (TLS 1.3, cert verify)
 ```
@@ -130,7 +137,7 @@ unless that target's prebuilt is actually selected.
 ```zig
 // consumer build.zig.zon — tarball root holds lib/ and include/
 .dependencies = .{
-    .boringssl_zig = .{ .url = "...", .hash = "..." },
+    .boringssl = .{ .url = "...", .hash = "..." },
     .boringssl_prebuilt_aarch64_macos = .{
         .url = "https://example.com/boringssl-prebuilt-aarch64-macos.tar.gz",
         .hash = "...",
@@ -147,7 +154,7 @@ const prebuilt_root: ?[]const u8 =
     else
         null; // first configure pass; the runner re-runs build() after fetching
 
-const boringssl_dep = b.dependency("boringssl_zig", .{
+const boringssl_dep = b.dependency("boringssl", .{
     .target = target,
     .optimize = optimize,
     .@"boringssl-prebuilt-path" = prebuilt_root,
@@ -244,6 +251,12 @@ resumed.setEarlyDataEnabled(true);
 // ... drive handshake; then check ...
 const status = resumed.earlyDataStatus(); // .accepted / .rejected / .not_offered
 
+// RFC 8446 ClientHello random — 32 bytes, identical on both endpoints
+// once the ClientHello is processed. A server-side
+// AllowEarlyDataCallback can bind it to the resumption identity:
+// SHA256(ticket || client_random).
+const client_random = try conn.getClientRandom();
+
 // SSLKEYLOGFILE-style debugging
 try client_ctx.setKeylogCallback(struct {
     fn line(s: []const u8) void { std.debug.print("{s}\n", .{s}); }
@@ -317,7 +330,7 @@ tests/                  KATs and in-process integration tests
   quic_bridge.zig       end-to-end QUIC TLS handshake via Method callbacks
   tls_session.zig       session resumption + QUIC 0-RTT round-trip
   tls_keylog.zig        keylog callback fires with SSLKEYLOGFILE-format lines
-examples/consumer/      standalone Zig package importing boringssl-zig
+examples/consumer/      standalone Zig package importing boringssl
                         via build.zig.zon — `just test-consumer` exercises it
 build.zig               main build script, dispatches on -Dboringssl-source
 build_boringssl.zig     reads gen/sources.json, emits libcrypto/libssl
@@ -380,14 +393,14 @@ A working example lives at [examples/consumer/](examples/consumer/). Its
 
 ```zig
 .dependencies = .{
-    .boringssl_zig = .{ .path = "../.." },
+    .boringssl = .{ .path = "../.." },
 },
 ```
 
 Its `build.zig` pulls the module:
 
 ```zig
-const boringssl_dep = b.dependency("boringssl_zig", .{
+const boringssl_dep = b.dependency("boringssl", .{
     .target = target,
     .optimize = optimize,
 });

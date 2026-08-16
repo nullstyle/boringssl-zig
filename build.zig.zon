@@ -1,7 +1,7 @@
 .{
-    .name = .boringssl_zig,
+    .name = .boringssl,
     .version = "0.6.5",
-    .fingerprint = 0x5f3b14003c1d21e2,
+    .fingerprint = 0x5f0947d23743fe56,
     .minimum_zig_version = "0.17.0-dev.813+2153f8143",
     .dependencies = .{
         .boringssl_src = .{

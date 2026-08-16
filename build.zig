@@ -55,7 +55,7 @@ fn resolvePrebuiltDir(b: *std.Build, prebuilt_path: ?[]const u8, boringssl_targe
             std.debug.panic(
                 \\-Dboringssl-prebuilt-path must be absolute (got '{s}').
                 \\It is resolved against the build runner's working directory, which is
-                \\not the package root when boringssl-zig is built as a dependency.
+                \\not the package root when boringssl is built as a dependency.
             , .{supplied});
         }
 

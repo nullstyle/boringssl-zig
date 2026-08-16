@@ -7,4 +7,5 @@ test {
     _ = @import("tls_session.zig");
     _ = @import("tls_keylog.zig");
     _ = @import("tls_early_data_callback.zig");
+    _ = @import("tls_client_random.zig");
 }

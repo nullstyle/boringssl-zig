@@ -1,4 +1,4 @@
-//! Standalone consumer of boringssl-zig via build.zig.zon.
+//! Standalone consumer of boringssl via build.zig.zon.
 //!
 //! This exists as a regression test for the package boundary: if
 //! something in the parent project breaks consumability (paths,
@@ -13,24 +13,24 @@ pub fn build(b: *std.Build) void {
 
     // Forwarded straight through, the way a real downstream package (quic-zig)
     // does, so `just test-consumer-prebuilt` can exercise the prebuilt-linking
-    // options from outside the boringssl-zig package. Unset options stay unset.
-    const boringssl_dep = b.dependency("boringssl_zig", .{
+    // options from outside the boringssl package. Unset options stay unset.
+    const boringssl_dep = b.dependency("boringssl", .{
         .target = target,
         .optimize = optimize,
         .@"boringssl-source" = b.option(
             []const u8,
             "boringssl-source",
-            "Forwarded to boringssl-zig: 'zig' or 'cmake'",
+            "Forwarded to boringssl: 'zig' or 'cmake'",
         ),
         .@"boringssl-target" = b.option(
             []const u8,
             "boringssl-target",
-            "Forwarded to boringssl-zig: prebuilt directory name",
+            "Forwarded to boringssl: prebuilt directory name",
         ),
         .@"boringssl-prebuilt-path" = b.option(
             []const u8,
             "boringssl-prebuilt-path",
-            "Forwarded to boringssl-zig: absolute path to prebuilt BoringSSL archives",
+            "Forwarded to boringssl: absolute path to prebuilt BoringSSL archives",
         ),
     });
     const boringssl_mod = boringssl_dep.module("boringssl");
