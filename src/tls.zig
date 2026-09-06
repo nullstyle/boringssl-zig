@@ -13,6 +13,8 @@ const c = @import("c");
 
 pub const quic = @import("tls_quic.zig");
 
+const crypto_hash = @import("crypto/hash.zig");
+
 const c_alloc = std.heap.c_allocator;
 
 pub const Error = error{
@@ -480,12 +482,24 @@ pub const Conn = struct {
         return ptr[0..@intCast(len)];
     }
 
-    /// Set Server Name Indication (SNI) for the upcoming handshake.
-    /// Useful for QUIC clients that don't go through `newClient`.
-    pub fn setHostname(self: *Conn, hostname: [:0]const u8) Error!void {
+    /// Set Server Name Indication (SNI) for the upcoming handshake
+    /// WITHOUT binding server-certificate identity checking to the
+    /// name. Chain verification against the context's trust anchors
+    /// still runs — this is the "pin the CA, skip the name check"
+    /// posture for private-network peers dialed by address, where the
+    /// certificate's identity is its cluster membership rather than
+    /// the dialed name. The hostname is still sent in the ClientHello
+    /// (SNI remains useful for cert selection / routing).
+    pub fn setSni(self: *Conn, hostname: [:0]const u8) Error!void {
         if (c.zbssl_SSL_set_tlsext_host_name(self.inner, hostname.ptr) != 1) {
             return Error.SslSetHostnameFailed;
         }
+    }
+
+    /// Set Server Name Indication (SNI) for the upcoming handshake.
+    /// Useful for QUIC clients that don't go through `newClient`.
+    pub fn setHostname(self: *Conn, hostname: [:0]const u8) Error!void {
+        try self.setSni(hostname);
         const param = c.zbssl_SSL_get0_param(self.inner);
         _ = c.zbssl_X509_VERIFY_PARAM_set1_host(param, hostname.ptr, hostname.len);
     }
@@ -731,6 +745,42 @@ pub const Conn = struct {
         const n = c.zbssl_SSL_get_client_random(self.inner, &out, out.len);
         if (n != out.len) return Error.ClientRandomUnavailable;
         return out;
+    }
+
+    /// SHA-256 of the peer's leaf-certificate SubjectPublicKeyInfo
+    /// (the full DER-encoded SPKI — AlgorithmIdentifier +
+    /// subjectPublicKey — the same preimage as
+    /// `openssl x509 -pubkey | openssl pkey -pubin -outform DER |
+    /// openssl dgst -sha256`). Available once the handshake has
+    /// completed and the peer presented a certificate; null otherwise
+    /// (handshake incomplete, peer sent no certificate, or the digest
+    /// could not be computed). Works on resumed sessions — BoringSSL
+    /// keeps the original session's peer certificate — and is
+    /// role-agnostic: servers read the client certificate, clients
+    /// read the server certificate.
+    ///
+    /// The digest is stable across certificate re-issuance as long as
+    /// the keypair is retained, so embedders use it as a stable
+    /// peer identity. The certificate reference BoringSSL hands out
+    /// is released before returning; only the 32 digest bytes escape.
+    pub fn peerCertSpkiDigest(self: *const Conn) ?[32]u8 {
+        // SSL_get_peer_certificate returns a new reference the caller
+        // must release with X509_free; the X509 only needs to stay
+        // alive for the i2d call below.
+        const cert = c.zbssl_SSL_get_peer_certificate(self.inner) orelse return null;
+        defer c.zbssl_X509_free(cert);
+
+        const pubkey = c.zbssl_X509_get_X509_PUBKEY(cert);
+        // Two-call i2d: the first (outp == null) reports the DER
+        // length, the second encodes into the allocated buffer.
+        const der_len = c.zbssl_i2d_X509_PUBKEY(pubkey, null);
+        if (der_len <= 0) return null;
+        const der = c_alloc.alloc(u8, @intCast(der_len)) catch return null;
+        defer c_alloc.free(der);
+        var cursor: [*c]u8 = der.ptr;
+        if (c.zbssl_i2d_X509_PUBKEY(pubkey, &cursor) != der_len) return null;
+
+        return crypto_hash.Sha256.hash(der) catch null;
     }
 };
 
