@@ -13,6 +13,9 @@ pub const crypto = struct {
     pub const kdf = @import("crypto/kdf.zig");
     pub const aes = @import("crypto/aes.zig");
     pub const chacha20 = @import("crypto/chacha20.zig");
+    pub const pkey = @import("crypto/pkey.zig");
+    pub const x509 = @import("crypto/x509.zig");
+    pub const pem = @import("crypto/pem.zig");
 };
 
 pub const tls = @import("tls.zig");
@@ -28,6 +31,9 @@ test {
     _ = crypto.aead;
     _ = crypto.kdf;
     _ = crypto.aes;
+    _ = crypto.pkey;
+    _ = crypto.x509;
+    _ = crypto.pem;
     _ = crypto.chacha20;
     _ = tls;
     _ = errors;

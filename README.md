@@ -207,6 +207,29 @@ const cc_mask = boringssl.crypto.chacha20.quicHpMask(&cc_hp_key, &sample);
 var rand_buf: [32]u8 = undefined;
 try boringssl.crypto.rand.fillBytes(&rand_buf);
 
+// Keys — generateEcP256 does the EC_KEY dance (EVP_EC_gen is not built
+// here) and calls CRYPTO_library_init, so first use cannot segfault.
+var key = try boringssl.crypto.pkey.generateEcP256();
+defer key.deinit();
+const peer_id = key.spkiDigest(); // [32]u8, stable across cert renewals
+
+// X.509 — a development CA and a leaf it signs.
+var ca = try boringssl.crypto.x509.CertificateBuilder.mintCa("My Dev CA", 3650);
+defer ca.deinit();
+var leaf = try ca.leaf("node-1")            // signed by ca.key
+    .validDays(365)
+    .san("my-cluster")                      // may repeat
+    .serverAuth().clientAuth()
+    .build(&key);                           // pubkey is key
+defer leaf.deinit();
+
+// PEM — bytes in, bytes out (never BIO_new_file, which writes to the
+// process CWD; callers hold directory handles, not the CWD).
+const cert_pem = try boringssl.crypto.pem.encodeCertificate(gpa, leaf.cert);
+const key_pem = try boringssl.crypto.pem.encodePrivateKey(gpa, key.pkey);
+const back = try boringssl.crypto.pem.decodeCertificate(cert_pem);
+defer boringssl.raw.zbssl_X509_free(back);
+
 // TLS client
 var tls_ctx = try boringssl.tls.Context.initClient(.{ .verify = .system });
 defer tls_ctx.deinit();

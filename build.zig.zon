@@ -1,6 +1,6 @@
 .{
     .name = .boringssl,
-    .version = "0.6.6",
+    .version = "0.6.7",
     .fingerprint = 0x5f0947d23743fe56,
     .minimum_zig_version = "0.17.0-dev.813+2153f8143",
     .dependencies = .{
